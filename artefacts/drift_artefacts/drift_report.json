@@ -1,0 +1,42 @@
+[
+  {
+    "feature": "text_len",
+    "psi": 0.34131525252020206,
+    "drift": true
+  },
+  {
+    "feature": "word_count",
+    "psi": 0.6475815827894879,
+    "drift": true
+  },
+  {
+    "feature": "kindle_freq",
+    "psi": 0.0,
+    "drift": false
+  },
+  {
+    "feature": "sentiment",
+    "psi": 0.9894454814162843,
+    "drift": true
+  },
+  {
+    "feature": "user_avg_len",
+    "psi": 0.0034067448335854144,
+    "drift": false
+  },
+  {
+    "feature": "user_review_count",
+    "psi": 0.010678652251760911,
+    "drift": false
+  },
+  {
+    "feature": "item_avg_len",
+    "psi": 0.002050253359634663,
+    "drift": false
+  },
+  {
+    "feature": "item_review_count",
+    "psi": 0.003971977269741899,
+    "drift": false
+  }
+]

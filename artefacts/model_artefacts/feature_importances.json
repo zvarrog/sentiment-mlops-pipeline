@@ -1,0 +1,202 @@
+[
+  {
+    "feature": "wait",
+    "importance": 9.46662221347319
+  },
+  {
+    "feature": "loved",
+    "importance": 8.995312780558434
+  },
+  {
+    "feature": "boring",
+    "importance": 8.890736201242243
+  },
+  {
+    "feature": "enjoyed",
+    "importance": 8.282369515269355
+  },
+  {
+    "feature": "unfortunately",
+    "importance": 7.886059807466563
+  },
+  {
+    "feature": "ridiculous",
+    "importance": 7.869893753617951
+  },
+  {
+    "feature": "disappointing",
+    "importance": 7.869558835300495
+  },
+  {
+    "feature": "sorry",
+    "importance": 7.201505768057871
+  },
+  {
+    "feature": "disappoint",
+    "importance": 7.151296672057114
+  },
+  {
+    "feature": "potential",
+    "importance": 6.894697781851273
+  },
+  {
+    "feature": "okay",
+    "importance": 6.82755411949679
+  },
+  {
+    "feature": "great",
+    "importance": 6.573464425187102
+  },
+  {
+    "feature": "hooked",
+    "importance": 6.541878688618212
+  },
+  {
+    "feature": "excellent",
+    "importance": 6.451348938939068
+  },
+  {
+    "feature": "didn",
+    "importance": 6.404808203119218
+  },
+  {
+    "feature": "wow",
+    "importance": 6.391663638832865
+  },
+  {
+    "feature": "rushed",
+    "importance": 6.389895237684903
+  },
+  {
+    "feature": "highly recommend",
+    "importance": 6.327428668153819
+  },
+  {
+    "feature": "amazing",
+    "importance": 6.299065983442508
+  },
+  {
+    "feature": "stupid",
+    "importance": 6.296456199618449
+  },
+  {
+    "feature": "unrealistic",
+    "importance": 6.232631370174021
+  },
+  {
+    "feature": "premise",
+    "importance": 6.232088231749112
+  },
+  {
+    "feature": "waste",
+    "importance": 6.175806779933868
+  },
+  {
+    "feature": "ok",
+    "importance": 6.15667383217698
+  },
+  {
+    "feature": "disappointment",
+    "importance": 6.091040365883926
+  },
+  {
+    "feature": "liked",
+    "importance": 6.0346862437301345
+  },
+  {
+    "feature": "annoying",
+    "importance": 6.014506004898308
+  },
+  {
+    "feature": "lacking",
+    "importance": 5.974826062437614
+  },
+  {
+    "feature": "predictable",
+    "importance": 5.964714790742162
+  },
+  {
+    "feature": "deleted",
+    "importance": 5.9567176957048735
+  },
+  {
+    "feature": "poorly",
+    "importance": 5.918642586815646
+  },
+  {
+    "feature": "weak",
+    "importance": 5.889611390592069
+  },
+  {
+    "feature": "jokes",
+    "importance": 5.853536176747143
+  },
+  {
+    "feature": "bit",
+    "importance": 5.8382325703374045
+  },
+  {
+    "feature": "fantastic",
+    "importance": 5.7761830159150085
+  },
+  {
+    "feature": "wasn sure",
+    "importance": 5.715902390284325
+  },
+  {
+    "feature": "highly",
+    "importance": 5.705691725875022
+  },
+  {
+    "feature": "awesome",
+    "importance": 5.666823201201521
+  },
+  {
+    "feature": "stars",
+    "importance": 5.573433302545214
+  },
+  {
+    "feature": "flat",
+    "importance": 5.565815864459934
+  },
+  {
+    "feature": "delicious",
+    "importance": 5.554509776129128
+  },
+  {
+    "feature": "lacked",
+    "importance": 5.488740165786249
+  },
+  {
+    "feature": "favorite",
+    "importance": 5.4647329383964935
+  },
+  {
+    "feature": "wonderful",
+    "importance": 5.463868866022318
+  },
+  {
+    "feature": "fun",
+    "importance": 5.43616799113928
+  },
+  {
+    "feature": "easy",
+    "importance": 5.435731030801382
+  },
+  {
+    "feature": "unless",
+    "importance": 5.389373615377304
+  },
+  {
+    "feature": "waste time",
+    "importance": 5.375946135641137
+  },
+  {
+    "feature": "heart",
+    "importance": 5.355942135621747
+  },
+  {
+    "feature": "hot",
+    "importance": 5.330905790202064
+  }
+]

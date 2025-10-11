@@ -1,0 +1,24 @@
+{
+  "best_model": "logreg",
+  "best_params": {
+    "use_stemming": false,
+    "tfidf_max_features": 2500,
+    "text_weight": 0.3308210577211682,
+    "numeric_weight": 1.192120721755567,
+    "logreg_C": 15.702558167182604,
+    "logreg_solver": "lbfgs",
+    "logreg_penalty": "l2"
+  },
+  "best_val_f1_macro": 0.5158576030255427,
+  "test_metrics": {
+    "accuracy": 0.35912906610703044,
+    "f1_macro": 0.3001595054845366,
+    "f1_weighted": 0.3012455985185432
+  },
+  "sizes": {
+    "train": 52522,
+    "val": 11042,
+    "test": 11436
+  },
+  "duration_sec": 4469.407915115356
+}

@@ -1,0 +1,18 @@
+# Dockerfile.airflow — корневой Dockerfile для сервиса Airflow
+FROM apache/airflow:2.10.2
+
+USER root
+# Java для PySpark
+RUN apt-get update && \
+    apt-get install -y default-jre-headless && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+USER airflow
+
+# Единый файл зависимостей
+COPY requirements.txt /tmp/requirements.txt
+# Обновляем pip/setuptools/wheel — часто улучшает поведение резолвера зависимостей
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    pip --version && \
+    pip install --no-cache-dir -r /tmp/requirements.txt

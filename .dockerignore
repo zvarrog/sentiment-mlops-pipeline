@@ -1,0 +1,18 @@
+# Общие исключения
+.git
+.gitignore
+.dockerignore
+.env
+
+.vscode/
+.idea/
+
+*.pyc
+
+
+# Данные и артефакты — монтируются как volume
+data/
+mlruns/
+artefacts/
+optuna_study.db
+kaggle.json

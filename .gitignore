@@ -1,0 +1,9 @@
+.venv/
+*.pyc
+
+kaggle.json
+.vscode/
+
+data/raw/
+data/processed/
+mlruns/

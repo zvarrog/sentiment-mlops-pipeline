@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: optuna
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U admin -d optuna']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    env_file:
+      - .env
+    environment:
+      # Docker-специфичные переменные
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://admin:admin@postgres:5432/airflow_meta'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
+      OPTUNA_STORAGE: 'postgresql+psycopg2://admin:admin@postgres:5432/optuna'
+      MLFLOW_TRACKING_URI: 'file:/opt/airflow/mlruns'
+      JAVA_HOME: /usr/lib/jvm/default-java
+      PYTHONPATH: /opt/airflow
+      GIT_PYTHON_REFRESH: 'quiet'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./scripts:/opt/airflow/scripts:ro
+      - ./data:/opt/airflow/data
+      # Путь должен совпадать с MODEL_DIR/ARTEFACTS_DIR в настройках приложения
+      - ./artefacts:/opt/airflow/artefacts
+      - mlruns_data:/opt/airflow/mlruns
+      - airflow_logs:/opt/airflow/logs
+      # Монтируем kaggle.json через переменную окружения KAGGLE_JSON.
+      # По умолчанию файл ожидается в корне проекта ./kaggle.json.
+      - ${KAGGLE_JSON:-./kaggle.json}:/home/airflow/.kaggle/kaggle.json:ro
+    # Для запуска на GPU, раскомментируйте строку ниже (требуются драйверы/Nvidia Container Toolkit):
+    # gpus: all
+    ports:
+      - '8080:8080'
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    command: >-
+      bash -c "set -e;
+      airflow db migrate;
+      airflow users list | grep -q admin@example.com || airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com;
+      airflow webserver -p 8080 &
+      echo 'Ожидание запуска Airflow UI...';
+      for i in {1..30}; do curl -sSf http://localhost:8080/health && break || sleep 2; done;
+      echo 'Airflow UI доступен: http://localhost:8080 (admin/admin)';
+      exec airflow scheduler"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: kindle_api
+    depends_on:
+      airflow:
+        condition: service_started
+    ports:
+      - '8000:8000'
+    volumes:
+      # Путь должен совпадать с MODEL_DIR/ARTEFACTS_DIR в настройках приложения
+      - ./artefacts:/app/artefacts:ro
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+volumes:
+  pgdata:
+  mlruns_data:
+  airflow_logs:
