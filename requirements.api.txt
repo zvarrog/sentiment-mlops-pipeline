@@ -1,0 +1,28 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+python-dotenv==1.0.1
+gunicorn
+pandas==2.2.2
+numpy==1.26.4
+joblib==1.4.2
+requests==2.32.3
+pyarrow==15.0.0
+fastparquet==2024.11.0
+
+# Для десериализации моделей, сохранённых с использованием dill/cloudpickle
+dill==0.3.8
+
+# Для стемминга в пользовательском analyzer TF-IDF
+nltk==3.9.1
+
+# Для sentiment анализа в API (совместимость с обучением)
+textblob==0.18.0
+
+# Для классических моделей
+scikit-learn==1.7.1
+scipy==1.13.1
+
+# Для трансформеров
+torch==2.3.1
+transformers==4.45.0
