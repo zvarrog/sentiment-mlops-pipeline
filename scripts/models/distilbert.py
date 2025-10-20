@@ -17,17 +17,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         use_bigrams=False,
         device=None,
     ):
-        """Инициализация DistilBERT классификатора.
-
-        Args:
-            epochs: Количество эпох обучения (по умолчанию 1)
-            lr: Learning rate (по умолчанию 1e-4)
-            max_len: Максимальная длина токенизированного текста (по умолчанию 128)
-            batch_size: Размер батча (по умолчанию 8)
-            seed: Random seed для воспроизводимости (по умолчанию 42)
-            use_bigrams: Добавлять ли биграммы к текстам (по умолчанию False)
-            device: Устройство для обучения ('cpu', 'cuda' или None для автовыбора)
-        """
+        """DistilBERT classifier with frozen encoder and linear head."""
         self.epochs = epochs
         self.lr = lr
         self.max_len = max_len
@@ -54,14 +44,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
 
     @staticmethod
     def _augment_texts(texts):
-        """Добавляет биграммы к текстам для улучшения качества классификации.
-
-        Args:
-            texts: Массив текстов для аугментации
-
-        Returns:
-            np.ndarray: Тексты с добавленными биграммами (до 20 штук на текст)
-        """
+        """Add bigrams to texts for improved classification quality."""
 
         def _augment_bigrams(s: str) -> str:
             ws = s.split()
@@ -71,13 +54,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         return np.array([_augment_bigrams(t) for t in texts])
 
     def _get_device(self):
-        """Определяет устройство для операций модели.
-
-        Логика:
-        1) Если модель загружена — берём device из параметров.
-        2) Если не получается — используем _device_actual.
-        3) Фоллбек на CPU.
-        """
+        """Determine device for model operations (GPU if available, otherwise CPU)."""
         if self._head is not None:
             try:
                 return next(self._head.parameters()).device
@@ -90,43 +67,41 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 pass
         return self._device_actual or torch.device("cpu")
 
-    def fit(self, X, y):
-        """Обучает классификатор на текстах с фиксированным DistilBERT-encoder.
+    def fit(self, X, y, X_val=None, y_val=None):
+        """Train classifier on texts with frozen DistilBERT encoder.
 
         Args:
-            X: Тексты (list, np.ndarray или DataFrame)
-            y: Метки классов
-
-        Returns:
-            self: Обученная модель
+            X: Training texts
+            y: Training labels
+            X_val: Optional validation texts for early stopping
+            y_val: Optional validation labels for early stopping
         """
         torch.manual_seed(self.seed)
         texts = X if isinstance(X, (list, np.ndarray)) else X.values
         if self.use_bigrams:
             texts = self._augment_texts(texts)
+
         self._tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
         self._base_model = AutoModel.from_pretrained("distilbert-base-uncased")
+
+        # Автовыбор device
         device_str = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Отладка: логируем значение устройства
         import logging
 
         log = logging.getLogger(__name__)
-        log.info(
-            f"DistilBERT device: self.device='{self.device}', computed device_str='{device_str}'"
-        )
+        log.info(f"DistilBERT training on device: {device_str}")
 
-        # Проверяем корректность device_str перед созданием torch.device
-        # Если запрошен CUDA-устройcтво, но CUDA недоступна — переходим на CPU
+        # Валидация device
         if device_str not in ["cpu", "cuda"] and not device_str.startswith("cuda:"):
-            log.warning(
-                f"Некорректное устройство '{device_str}', переключаюсь на 'cpu'"
-            )
+            log.warning(f"Invalid device '{device_str}', falling back to 'cpu'")
             device_str = "cpu"
 
         device = torch.device(device_str)
+
         for p in self._base_model.parameters():
             p.requires_grad = False
+
         unique_labels = np.unique(y)
         self._classes_ = unique_labels
         label2idx = {lab: i for i, lab in enumerate(unique_labels)}
@@ -137,14 +112,32 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         optimizer = torch.optim.Adam(self._head.parameters(), lr=self.lr)
         loss_fn = torch.nn.CrossEntropyLoss()
         self._base_model.eval()
-        self._head.train()
 
-        def batch_iter():
-            for i in range(0, len(texts), self.batch_size):
-                yield texts[i : i + self.batch_size], y[i : i + self.batch_size]
+        # Подготовка validation set для early stopping
+        val_texts = None
+        val_labels = None
+        if X_val is not None and y_val is not None:
+            val_texts = X_val if isinstance(X_val, (list, np.ndarray)) else X_val.values
+            if self.use_bigrams:
+                val_texts = self._augment_texts(val_texts)
+            val_labels = np.vectorize(label2idx.get)(y_val).astype(int)
 
-        for _ in range(self.epochs):
-            for bt, by_raw in batch_iter():
+        def batch_iter(texts_batch, labels_batch):
+            for i in range(0, len(texts_batch), self.batch_size):
+                yield texts_batch[i : i + self.batch_size], labels_batch[
+                    i : i + self.batch_size
+                ]
+
+        best_val_loss = float("inf")
+        patience_counter = 0
+        patience = 2  # Ранняя остановка после 2 эпох без улучшения
+
+        for epoch in range(self.epochs):
+            self._head.train()
+            train_loss = 0.0
+            n_batches = 0
+
+            for bt, by_raw in batch_iter(texts, y):
                 by = np.vectorize(label2idx.get)(by_raw).astype(int)
                 enc = self._tokenize(bt)
                 enc = {k: v.to(device) for k, v in enc.items()}
@@ -158,6 +151,49 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                train_loss += loss.item()
+                n_batches += 1
+
+            avg_train_loss = train_loss / n_batches if n_batches > 0 else 0.0
+
+            # Валидация
+            if val_texts is not None:
+                self._head.eval()
+                val_loss = 0.0
+                val_batches = 0
+
+                with torch.no_grad():
+                    for bt, by in batch_iter(val_texts, val_labels):
+                        enc = self._tokenize(bt)
+                        enc = {k: v.to(device) for k, v in enc.items()}
+                        out = self._base_model(**enc)
+                        cls = out.last_hidden_state[:, 0]
+                        logits = self._head(cls)
+                        loss = loss_fn(
+                            logits, torch.tensor(by, dtype=torch.long, device=device)
+                        )
+                        val_loss += loss.item()
+                        val_batches += 1
+
+                avg_val_loss = val_loss / val_batches if val_batches > 0 else 0.0
+                log.info(
+                    f"Epoch {epoch+1}/{self.epochs}: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}"
+                )
+
+                # Early stopping
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        log.info(
+                            f"Early stopping: no improvement for {patience} epochs"
+                        )
+                        break
+            else:
+                log.info(f"Epoch {epoch+1}/{self.epochs}: train_loss={avg_train_loss:.4f}")
+
         self._device_actual = device
         self._head.eval()
         self._fitted = True

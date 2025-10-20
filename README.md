@@ -59,6 +59,25 @@ docker compose up -d airflow postgres
 
 ## 📊 Основные компоненты
 
+### ⚙️ Airflow DAG
+
+В проекте реализовано три Airflow DAG:
+
+1. **kindle_pipeline.py** — базовый последовательный пайплайн
+2. **kindle_pipeline_parallel.py** — параллельное обучение нескольких моделей (15-20 мин)
+3. **kindle_pipeline_monitored.py** — мониторинг производительности в PostgreSQL
+
+**Запуск:**
+
+```bash
+# Через UI: http://localhost:8080 (admin/admin)
+# Через CLI:
+docker exec -it sentiment-mlops-pipeline-airflow-1 \
+  airflow dags trigger kindle_reviews_parallel_pipeline
+```
+
+**Подробная документация:** `airflow/dags/README_NEW_DAGS.md`, `QUICK_START_NEW_DAGS.md`
+
 ### 🤖 Модели машинного обучения
 
 Поддерживаемые алгоритмы:
@@ -199,6 +218,69 @@ python scripts/drift_monitor.py
 
 ## 🔍 Мониторинг и наблюдаемость
 
+### 🎯 Новые возможности
+
+#### Мониторинг в реальном времени
+- **Prometheus** собирает метрики API (RPS, latency, errors)
+- **Grafana** отображает дашборды с алертами
+- Доступ: http://localhost:3000 (admin/admin)
+
+#### Drift Alerting
+- Автоматическая отправка в Slack при PSI > 0.2
+- Настройка: установите `SLACK_WEBHOOK_URL` в `.env`
+
+#### MLflow UI
+- Просмотр всех экспериментов: http://localhost:5000
+- Сравнение моделей, параметров и метрик
+- Скачивание артефактов (confusion matrix, feature importances)
+
+### 📊 Дашборды Grafana
+
+**API Performance:**
+- Request rate (по эндпоинтам)
+- Response time (p50, p95, p99)
+- Error rate
+- Active predictions by model
+
+**Model Health:**
+- Drift PSI по фичам
+- Prediction distribution
+- Feature importance changes over time
+
+**Infrastructure:**
+- CPU/Memory usage
+- Disk I/O
+- Network traffic
+
+### 🚨 Алертинг
+
+Настроены автоматические алерты:
+
+| Alert | Condition | Notification |
+|-------|-----------|--------------|
+| High Error Rate | Errors > 1% for 2min | Slack + Email |
+| High Latency | p95 > 500ms for 5min | Slack |
+| Significant Drift | PSI > 0.2 for any feature | Slack + retrain recommended |
+| Low Disk Space | Free space < 10% | Email |
+
+### Task Performance Monitoring
+
+Мониторинг производительности задач Airflow в PostgreSQL:
+
+```bash
+# Просмотр метрик длительности задач
+docker exec -it sentiment-mlops-pipeline-postgres-1 \
+  psql -U admin -d metrics -c \
+  "SELECT task_id, ROUND(AVG(duration_sec), 2) as avg_sec FROM task_metrics GROUP BY task_id;"
+```
+
+**Таблицы:**
+
+- `task_metrics` — длительность и статус каждой задачи
+- `model_metrics` — метрики моделей (F1, accuracy) по запускам
+
+**Подробнее:** `IMPLEMENTATION_NEW_DAGS.md`
+
 ### Drift Detection
 
 - Автоматическое обнаружение дрифта данных
@@ -263,6 +345,34 @@ python -m pytest tests/test_e2e_smoke.py -v
 - **F1-score** (macro/weighted) — сбалансированная метрика
 - **Время обучения** — эффективность пайплайна
 - **Время инференса** — скорость API
+
+## 🔒 Безопасность
+
+### Production checklist
+
+- [ ] Enable HTTPS (Let's Encrypt)
+- [ ] Set up API key authentication
+- [ ] Configure firewall (allow only 80, 443, 22)
+- [ ] Enable audit logging
+- [ ] Rotate secrets monthly
+- [ ] Set up VPN for internal services
+
+### Secrets Management
+
+**Development:** `.env` file (gitignored)
+
+**Production:** Kubernetes secrets или Vault
+
+```bash
+kubectl create secret generic kindle-secrets \
+  --from-env-file=.env.prod
+```
+
+### API Security Features
+
+- **Rate Limiting:** 100 req/min per IP (slowapi)
+- **Graceful Shutdown:** корректное завершение текущих запросов при остановке
+- **Read-only container:** безопасность через tmpfs и drop capabilities
 
 ## ⚙️ Конфигурация
 

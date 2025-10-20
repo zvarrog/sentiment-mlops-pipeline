@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+import requests
 
 from scripts.train_modules.feature_space import NUMERIC_COLS
 
@@ -64,11 +66,37 @@ def psi(
     return float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct)))
 
 
+def send_slack_alert(message: str, webhook_url: str | None = None):
+    """Отправляет алерт в Slack при обнаружении дрейфа."""
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        log.warning("SLACK_WEBHOOK_URL не установлен, алерт не отправлен")
+        return
+
+    payload = {
+        "text": f"🚨 *Drift Alert*\n{message}",
+        "username": "Drift Monitor",
+        "icon_emoji": ":chart_with_downwards_trend:",
+    }
+
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=5)
+        response.raise_for_status()
+        log.info("Slack alert sent successfully")
+    except Exception as e:
+        log.error(f"Failed to send Slack alert: {e}")
+
+
 def run_drift_monitor(
     new_path: str | Path,
     threshold: float = 0.2,
     save: bool = True,
     out_dir: str | Path | None = None,
+    alert_on_drift: bool = True,
 ) -> list[dict]:
     """Запускает расчёт PSI по числовым признакам и возвращает отчёт.
 
@@ -76,6 +104,7 @@ def run_drift_monitor(
       - new_path: путь к parquet с актуальными данными (например, test.parquet)
       - threshold: порог PSI для флага дрейфа
       - save: если True — сохранить отчёт в drift/drift_report.json
+      - alert_on_drift: если True и обнаружен дрейф — отправить алерт в Slack
 
     Возвращает список словарей: {feature, psi, drift}.
     """
@@ -219,4 +248,12 @@ def run_drift_monitor(
                 _plt.close()
         except Exception:
             pass
+
+    # Отправляем Slack алерт при обнаружении дрейфа
+    drifted = [r for r in report if r.get("drift")]
+    if drifted and alert_on_drift:
+        features = ", ".join(r.get("feature", "?") for r in drifted)
+        message = f"Обнаружен дрейф по {len(drifted)} признакам: {features}"
+        send_slack_alert(message)
+
     return report

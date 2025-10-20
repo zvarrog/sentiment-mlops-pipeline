@@ -1,22 +1,10 @@
-"""Полноценный training pipeline классических моделей с Optuna + MLflow.
-
-Что добавлено относительно базовой версии:
- - Корректное разделение: train.parquet / val.parquet / test.parquet (валидация только на val)
- - TF-IDF вместо Hashing (контролируемое max_features) + опциональный TruncatedSVD (понижение размерности)
- - Стандартизация числовых признаков (StandardScaler)
- - Выбор метрики оптимизации: macro F1 (лучше для несбалансированных классов)
- - Логирование в MLflow: параметры, метрики (train/val/test), артефакты (confusion matrix, classification report)
- - Optuna c SQLite storage (возобновляемость) + MedianPruner
- - Retrain лучшего пайплайна на train+val и финальная оценка на test
- - Метаданные: размеры датасетов, время выполнения, версии библиотек
- - Детальная структура кода без временных демо (для production impression)
-
-Файл не содержит тестового «вспомогательного» кода; всё экспериментальное должно располагаться в tests/.
-"""
+"""Training pipeline with Optuna hyperparameter optimization and MLflow tracking."""
 
 import json
 import logging
 import os
+import signal
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -47,6 +35,10 @@ from sklearn.preprocessing import StandardScaler
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
 from scripts.settings import (
+    DB_MAX_OVERFLOW,
+    DB_POOL_RECYCLE,
+    DB_POOL_SIZE,
+    DB_POOL_TIMEOUT,
     DISTILBERT_TIMEOUT_SEC,
     EARLY_STOP_PATIENCE,
     FORCE_SVD_THRESHOLD_MB,
@@ -59,10 +51,8 @@ from scripts.settings import (
     SEED,
     SELECTED_MODEL_KINDS,
     STUDY_BASE_NAME,
-    TFIDF_MAX_FEATURES_MAX,
-    TFIDF_MAX_FEATURES_MIN,
-    TFIDF_MAX_FEATURES_STEP,
     TRAIN_DEVICE,
+    get_tfidf_max_features_range,
     log,
 )
 from scripts.train_modules.data_loading import load_splits
@@ -83,82 +73,6 @@ EXPERIMENT_NAME: str = os.environ.get("MLFLOW_EXPERIMENT_NAME", "kindle_experime
 
 _model_sig = "_".join([m.value[:3] for m in sorted(SELECTED_MODEL_KINDS)])
 OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
-
-
-def _configure_mlflow_tracking() -> None:
-    """Устанавливает безопасный file-store для MLflow внутри контейнера/локально."""
-
-    original_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
-    log.info("MLflow URI до обработки: '%s'", original_uri or "НЕ ЗАДАНО")
-
-    # Если внешний URI задан и нет явного принуждения, уважаем его
-    force_local = os.environ.get("MLFLOW_FORCE_LOCAL", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    if original_uri and not force_local:
-        try:
-            mlflow.set_tracking_uri(original_uri)
-            actual = mlflow.get_tracking_uri()
-            log.info("MLflow URI оставлен без изменений: '%s'", actual)
-            return
-        except Exception as e:
-            log.warning(
-                "Не удалось установить внешний MLflow URI '%s': %s. Перехожу на локальный file-store.",
-                original_uri,
-                e,
-            )
-
-    # Пытаемся использовать путь в контейнере, иначе — локальный путь в проекте
-    target_path: Path
-    airflow_mlruns = Path("/opt/airflow/mlruns")
-    if airflow_mlruns.exists():
-        target_path = airflow_mlruns
-        log.info("Обнаружен /opt/airflow/mlruns — настраиваю локальный file-store")
-    else:
-        target_path = Path("mlruns").resolve()
-        log.info("Использую локальный mlruns: %s", target_path)
-
-    # Создаём директорию и проверяем права на запись; при ошибке — фолбэк в локальный каталог проекта
-    try:
-        target_path.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        log.warning(
-            "Не удалось создать директорию '%s': %s. Фолбэк в локальный путь.",
-            target_path,
-            e,
-        )
-        target_path = Path("mlruns").resolve()
-        target_path.mkdir(parents=True, exist_ok=True)
-
-    can_write = os.access(str(target_path), os.W_OK)
-    if not can_write:
-        try:
-            test_file = target_path / ".mlflow_write_test"
-            with open(test_file, "w", encoding="utf-8") as f:
-                f.write("ok")
-            try:
-                test_file.unlink()
-            except Exception:
-                pass
-            can_write = True
-        except Exception as e:
-            log.info(
-                "Нет прав на запись в '%s': %s. Перехожу на локальный путь.",
-                target_path,
-                e,
-            )
-            target_path = Path("mlruns").resolve()
-            target_path.mkdir(parents=True, exist_ok=True)
-
-    # Устанавливаем URI в явном file:// формате
-    file_uri = target_path.as_uri()
-    mlflow.set_tracking_uri(file_uri)
-    os.environ["MLFLOW_TRACKING_URI"] = file_uri
-
-    actual_uri = mlflow.get_tracking_uri()
-    log.info("MLflow URI после установки: '%s'", actual_uri)
 
 
 def build_pipeline(
@@ -216,12 +130,16 @@ def build_pipeline(
 
     use_stemming = trial.suggest_categorical("use_stemming", [False, True])
 
+    # Адаптивный TF-IDF max_features на основе размера train датасета
+    n_train_samples = int(trial.user_attrs.get("n_train_samples", 20000))
+    tfidf_min, tfidf_max, tfidf_step = get_tfidf_max_features_range(n_train_samples)
+
     # Общие параметры TF-IDF для всех моделей (кроме DistilBERT)
     text_max_features = trial.suggest_int(
         "tfidf_max_features",
-        TFIDF_MAX_FEATURES_MIN,
-        TFIDF_MAX_FEATURES_MAX,
-        step=TFIDF_MAX_FEATURES_STEP,
+        tfidf_min,
+        tfidf_max,
+        step=tfidf_step,
     )
 
     # Базовый TF-IDF для всех моделей
@@ -518,7 +436,10 @@ def _early_stop_callback(patience: int, min_trials: int):
 def _extract_feature_importances(
     pipeline: Pipeline, use_svd: bool
 ) -> list[dict[str, float]]:
-    """Возвращает список топ‑важностей фич из финального пайплайна (coef_/feature_importances_)."""
+    """Возвращает список топ‑важностей фич из финального пайплайна (coef_/feature_importances_).
+    
+    Для SVD добавляет топ-термины для каждого компонента.
+    """
     res: list[dict[str, float]] = []
     try:
         if "pre" not in pipeline.named_steps or "model" not in pipeline.named_steps:
@@ -535,13 +456,24 @@ def _extract_feature_importances(
         text_dim = len(vocab_inv) if vocab_inv else 0
         numeric_cols = pre.transformers_[1][2]
         feature_names: list[str] = []
+        
         if not use_svd and vocab_inv:
             feature_names.extend(
                 [vocab_inv.get(i, f"tok_{i}") for i in range(text_dim)]
             )
         elif use_svd and "svd" in text_pipe.named_steps:
-            svd_comp = text_pipe.named_steps["svd"].n_components
-            feature_names.extend([f"svd_{i}" for i in range(svd_comp)])
+            svd_model = text_pipe.named_steps["svd"]
+            n_components = svd_model.n_components
+            
+            # Для каждого SVD компонента находим топ-10 слов
+            for comp_idx in range(n_components):
+                component = svd_model.components_[comp_idx]
+                top_indices = np.argsort(np.abs(component))[-10:][::-1]
+                top_terms = [vocab_inv.get(i, f"tok_{i}") for i in top_indices]
+                # Формируем читаемое имя: svd_0[book,kindle,read...]
+                feature_name = f"svd_{comp_idx}[{','.join(top_terms[:3])}...]"
+                feature_names.append(feature_name)
+        
         feature_names.extend(list(numeric_cols))
 
         if hasattr(model, "coef_"):
@@ -566,8 +498,23 @@ def run():
 
     setup_training_logging()
 
-    # Настройка MLflow трекинга до любых логов
-    _configure_mlflow_tracking()
+    # Graceful SIGTERM handling
+    shutdown_requested = False
+
+    def signal_handler(signum, frame):
+        nonlocal shutdown_requested
+        log.warning(f"Получен сигнал {signum} (SIGTERM/SIGINT), завершаю обучение...")
+        shutdown_requested = True
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Настройка MLflow трекинга
+    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    mlflow.set_tracking_uri(mlflow_uri)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    log.info("MLflow tracking URI: %s", mlflow_uri)
 
     from scripts.settings import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
 
@@ -656,12 +603,25 @@ def run():
             pruner = optuna.pruners.MedianPruner(n_startup_trials=5)
             study_name = f"{STUDY_BASE_NAME}_{model_name.value}{('_' + fixed_solver) if fixed_solver else ''}_{_model_sig}"
             with mlflow.start_run(nested=True, run_name=f"model={model_name.value}"):
+                # Connection pooling для PostgreSQL
+                storage_kwargs = {}
+                if OPTUNA_STORAGE.startswith("postgresql"):
+                    storage_kwargs = {
+                        "engine_kwargs": {
+                            "pool_size": DB_POOL_SIZE,
+                            "max_overflow": DB_MAX_OVERFLOW,
+                            "pool_timeout": DB_POOL_TIMEOUT,
+                            "pool_recycle": DB_POOL_RECYCLE,
+                        }
+                    }
+
                 study = optuna.create_study(
                     direction="maximize",
                     pruner=pruner,
                     storage=OPTUNA_STORAGE,
                     study_name=study_name,
                     load_if_exists=True,
+                    **storage_kwargs,
                 )
                 mlflow.log_param("study_name", study_name)
                 mlflow.log_param(
