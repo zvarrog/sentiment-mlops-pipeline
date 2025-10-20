@@ -96,7 +96,7 @@ docker exec -it sentiment-mlops-pipeline-postgres-1 \
 #### Последние 10 выполнений задач
 
 ```sql
-SELECT 
+SELECT
     task_id,
     execution_date,
     duration_sec,
@@ -109,7 +109,7 @@ LIMIT 10;
 #### Средняя длительность по задачам
 
 ```sql
-SELECT 
+SELECT
     task_id,
     ROUND(AVG(duration_sec)::numeric, 2) as avg_duration,
     COUNT(*) as runs
@@ -122,7 +122,7 @@ ORDER BY avg_duration DESC;
 #### Метрики моделей
 
 ```sql
-SELECT 
+SELECT
     model_name,
     metric_name,
     ROUND(metric_value::numeric, 4) as value,

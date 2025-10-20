@@ -30,8 +30,9 @@ def profile_training():
 
 def profile_api():
     """Profile API inference performance."""
-    from scripts.train_modules.data_loading import load_splits
     import joblib
+
+    from scripts.train_modules.data_loading import load_splits
 
     model = joblib.load("artefacts/best_model.joblib")
     _, _, X_test, _, _, _ = load_splits()

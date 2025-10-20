@@ -221,15 +221,18 @@ python scripts/drift_monitor.py
 ### 🎯 Новые возможности
 
 #### Мониторинг в реальном времени
+
 - **Prometheus** собирает метрики API (RPS, latency, errors)
 - **Grafana** отображает дашборды с алертами
 - Доступ: http://localhost:3000 (admin/admin)
 
 #### Drift Alerting
+
 - Автоматическая отправка в Slack при PSI > 0.2
 - Настройка: установите `SLACK_WEBHOOK_URL` в `.env`
 
 #### MLflow UI
+
 - Просмотр всех экспериментов: http://localhost:5000
 - Сравнение моделей, параметров и метрик
 - Скачивание артефактов (confusion matrix, feature importances)
@@ -237,17 +240,20 @@ python scripts/drift_monitor.py
 ### 📊 Дашборды Grafana
 
 **API Performance:**
+
 - Request rate (по эндпоинтам)
 - Response time (p50, p95, p99)
 - Error rate
 - Active predictions by model
 
 **Model Health:**
+
 - Drift PSI по фичам
 - Prediction distribution
 - Feature importance changes over time
 
 **Infrastructure:**
+
 - CPU/Memory usage
 - Disk I/O
 - Network traffic
@@ -256,12 +262,12 @@ python scripts/drift_monitor.py
 
 Настроены автоматические алерты:
 
-| Alert | Condition | Notification |
-|-------|-----------|--------------|
-| High Error Rate | Errors > 1% for 2min | Slack + Email |
-| High Latency | p95 > 500ms for 5min | Slack |
+| Alert             | Condition                 | Notification                |
+| ----------------- | ------------------------- | --------------------------- |
+| High Error Rate   | Errors > 1% for 2min      | Slack + Email               |
+| High Latency      | p95 > 500ms for 5min      | Slack                       |
 | Significant Drift | PSI > 0.2 for any feature | Slack + retrain recommended |
-| Low Disk Space | Free space < 10% | Email |
+| Low Disk Space    | Free space < 10%          | Email                       |
 
 ### Task Performance Monitoring
 

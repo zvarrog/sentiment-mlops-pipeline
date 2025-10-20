@@ -10,10 +10,11 @@
 from datetime import datetime
 
 try:
-    from airflow import DAG
     from airflow.models import TaskInstance
     from airflow.operators.python import PythonOperator
     from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+    from airflow import DAG
 except ImportError:
 
     class _Dummy:
@@ -331,7 +332,6 @@ with DAG(
     description=_DOC,
     tags=["sentiment", "monitored", "ml"],
 ) as dag:
-
     download = PythonOperator(
         task_id="downloading",
         python_callable=_task_download,
