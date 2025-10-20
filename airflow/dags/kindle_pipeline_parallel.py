@@ -13,8 +13,9 @@
 from datetime import datetime
 
 try:
-    from airflow import DAG
     from airflow.operators.python import PythonOperator
+
+    from airflow import DAG
 except ImportError:
 
     class _Dummy:
@@ -107,9 +108,10 @@ def _task_validate_schema(**context):
     log = setup_auto_logging()
     log.info("Валидация схемы данных")
 
+    from pathlib import Path
+
     from scripts.data_validation import KINDLE_REVIEWS_SCHEMA, validate_parquet_file
     from scripts.settings import PROCESSED_DATA_DIR
-    from pathlib import Path
 
     # Проверяем train.parquet
     train_file = Path(PROCESSED_DATA_DIR) / "train.parquet"
@@ -136,9 +138,10 @@ def _task_validate_quality(**context):
     log = setup_auto_logging()
     log.info("Валидация качества данных")
 
+    from pathlib import Path
+
     from scripts.data_validation import validate_parquet_dataset
     from scripts.settings import PROCESSED_DATA_DIR
-    from pathlib import Path
 
     results = validate_parquet_dataset(Path(PROCESSED_DATA_DIR))
 
@@ -174,15 +177,12 @@ def _train_model_wrapper(model_kind: str, **context):
 
     import joblib
     import mlflow
-    import numpy as np
     import optuna
-    from sklearn.metrics import f1_score
 
     from scripts.settings import (
         MODEL_ARTEFACTS_DIR,
         OPTUNA_N_TRIALS,
         OPTUNA_STORAGE,
-        SEED,
     )
     from scripts.train import build_pipeline, compute_metrics, objective
     from scripts.train_modules.data_loading import load_splits
@@ -291,7 +291,6 @@ def _task_train_gb(**context):
 def _task_select_best(**context):
     """Выбор лучшей модели по метрике val_f1_macro."""
     _setup_env(**context)
-    import json
     import shutil
     from pathlib import Path
 
@@ -349,7 +348,6 @@ with DAG(
     description=_DOC,
     tags=["sentiment", "parallel", "ml"],
 ) as dag:
-
     download = PythonOperator(
         task_id="download",
         python_callable=_task_download,

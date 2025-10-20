@@ -87,6 +87,7 @@ MEMORY_WARNING_MB = int(
     os.getenv("MEMORY_WARNING_MB", "2048")
 )  # лимит предупреждения о памяти
 
+
 # Адаптивный TF-IDF max_features на основе размера датасета
 # Для малых датасетов (<100K) используем меньше фичей, для больших (>500K) - больше
 def get_tfidf_max_features_range(dataset_size: int) -> tuple[int, int, int]:

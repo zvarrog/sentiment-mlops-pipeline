@@ -82,9 +82,7 @@ def test_parallel_dag_dependencies():
         ]
 
         for task_id in required_tasks:
-            assert (
-                task_id in tasks
-            ), f"Задача {task_id} не найдена в DAG"
+            assert task_id in tasks, f"Задача {task_id} не найдена в DAG"
 
         # В тестовой среде без Airflow зависимости не создаются
         # Это нормально для статического анализа
@@ -122,9 +120,7 @@ def test_metrics_db_schema():
 def test_multiple_databases_init_script():
     """Проверка скрипта инициализации нескольких БД."""
     script_file = (
-        Path(__file__).parent.parent
-        / "postgres-init"
-        / "00-init-multiple-databases.sh"
+        Path(__file__).parent.parent / "postgres-init" / "00-init-multiple-databases.sh"
     )
     assert script_file.exists(), "Скрипт инициализации нескольких БД не найден"
 

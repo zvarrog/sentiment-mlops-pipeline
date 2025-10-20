@@ -437,7 +437,7 @@ def _extract_feature_importances(
     pipeline: Pipeline, use_svd: bool
 ) -> list[dict[str, float]]:
     """Возвращает список топ‑важностей фич из финального пайплайна (coef_/feature_importances_).
-    
+
     Для SVD добавляет топ-термины для каждого компонента.
     """
     res: list[dict[str, float]] = []
@@ -456,7 +456,7 @@ def _extract_feature_importances(
         text_dim = len(vocab_inv) if vocab_inv else 0
         numeric_cols = pre.transformers_[1][2]
         feature_names: list[str] = []
-        
+
         if not use_svd and vocab_inv:
             feature_names.extend(
                 [vocab_inv.get(i, f"tok_{i}") for i in range(text_dim)]
@@ -464,7 +464,7 @@ def _extract_feature_importances(
         elif use_svd and "svd" in text_pipe.named_steps:
             svd_model = text_pipe.named_steps["svd"]
             n_components = svd_model.n_components
-            
+
             # Для каждого SVD компонента находим топ-10 слов
             for comp_idx in range(n_components):
                 component = svd_model.components_[comp_idx]
@@ -473,7 +473,7 @@ def _extract_feature_importances(
                 # Формируем читаемое имя: svd_0[book,kindle,read...]
                 feature_name = f"svd_{comp_idx}[{','.join(top_terms[:3])}...]"
                 feature_names.append(feature_name)
-        
+
         feature_names.extend(list(numeric_cols))
 
         if hasattr(model, "coef_"):

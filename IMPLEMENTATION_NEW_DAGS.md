@@ -7,11 +7,13 @@
 ### 1. **kindle_pipeline_parallel.py** — Параллельное обучение моделей
 
 **Архитектура:**
+
 ```
 download → [validate_schema, validate_quality] → [train_logreg, train_rf, train_gb] → select_best
 ```
 
 **Ключевые особенности:**
+
 - ✅ Параллельная валидация схемы и качества данных
 - ✅ Одновременное обучение 3 моделей (LogReg, RF, GradientBoosting)
 - ✅ Автоматический выбор лучшей модели по F1-macro на валидации
@@ -19,6 +21,7 @@ download → [validate_schema, validate_quality] → [train_logreg, train_rf, tr
 - ✅ Ускорение обучения за счет параллелизма (~15-20 минут вместо ~60)
 
 **Результаты:**
+
 - `artefacts/model_artefacts/model_logreg.joblib`
 - `artefacts/model_artefacts/model_rf.joblib`
 - `artefacts/model_artefacts/model_hist_gb.joblib`
@@ -30,11 +33,13 @@ download → [validate_schema, validate_quality] → [train_logreg, train_rf, tr
 ### 2. **kindle_pipeline_monitored.py** — Мониторинг производительности
 
 **Архитектура:**
+
 ```
 download → validate → process → drift_monitor → train
 ```
 
 **Ключевые особенности:**
+
 - ✅ Логирование длительности каждой задачи в PostgreSQL
 - ✅ Отслеживание статусов выполнения (success/failed/skipped)
 - ✅ Сохранение метрик моделей (val_f1_macro, test_f1_macro, accuracy)
@@ -44,6 +49,7 @@ download → validate → process → drift_monitor → train
 **Схема БД metrics:**
 
 #### Таблица `task_metrics`
+
 ```sql
 CREATE TABLE task_metrics (
     id SERIAL PRIMARY KEY,
@@ -57,6 +63,7 @@ CREATE TABLE task_metrics (
 ```
 
 #### Таблица `model_metrics`
+
 ```sql
 CREATE TABLE model_metrics (
     id SERIAL PRIMARY KEY,
@@ -129,7 +136,7 @@ docker exec -it sentiment-mlops-pipeline-postgres-1 \
 ### Средняя длительность задач
 
 ```sql
-SELECT 
+SELECT
     task_id,
     ROUND(AVG(duration_sec)::numeric, 2) as avg_duration,
     COUNT(*) as runs
@@ -142,7 +149,7 @@ ORDER BY avg_duration DESC;
 ### Тренд производительности модели
 
 ```sql
-SELECT 
+SELECT
     execution_date::date as date,
     model_name,
     metric_name,
@@ -156,7 +163,7 @@ ORDER BY date DESC;
 ### Самые медленные запуски
 
 ```sql
-SELECT 
+SELECT
     dag_id,
     execution_date,
     SUM(duration_sec) as total_duration
@@ -188,14 +195,14 @@ LIMIT 10;
 
 ## Преимущества
 
-| Характеристика | Базовый DAG | Parallel | Monitored |
-|---|---|---|---|
-| Время выполнения | ~30 мин | ~15-20 мин | ~20-30 мин |
-| Количество моделей | 1 | 3 параллельно | 1 |
-| Мониторинг | Нет | Нет | ✅ Да (БД) |
-| Валидация | Последовательно | Параллельно | Последовательно |
-| Аналитика | Через MLflow | Через MLflow | БД + MLflow |
-| Лучший для | Production | Эксперименты | Мониторинг |
+| Характеристика     | Базовый DAG     | Parallel      | Monitored       |
+| ------------------ | --------------- | ------------- | --------------- |
+| Время выполнения   | ~30 мин         | ~15-20 мин    | ~20-30 мин      |
+| Количество моделей | 1               | 3 параллельно | 1               |
+| Мониторинг         | Нет             | Нет           | ✅ Да (БД)      |
+| Валидация          | Последовательно | Параллельно   | Последовательно |
+| Аналитика          | Через MLflow    | Через MLflow  | БД + MLflow     |
+| Лучший для         | Production      | Эксперименты  | Мониторинг      |
 
 ---
 

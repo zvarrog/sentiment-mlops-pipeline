@@ -124,9 +124,10 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
 
         def batch_iter(texts_batch, labels_batch):
             for i in range(0, len(texts_batch), self.batch_size):
-                yield texts_batch[i : i + self.batch_size], labels_batch[
-                    i : i + self.batch_size
-                ]
+                yield (
+                    texts_batch[i : i + self.batch_size],
+                    labels_batch[i : i + self.batch_size],
+                )
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -177,7 +178,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
 
                 avg_val_loss = val_loss / val_batches if val_batches > 0 else 0.0
                 log.info(
-                    f"Epoch {epoch+1}/{self.epochs}: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}"
+                    f"Epoch {epoch + 1}/{self.epochs}: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}"
                 )
 
                 # Early stopping
@@ -192,7 +193,9 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                         )
                         break
             else:
-                log.info(f"Epoch {epoch+1}/{self.epochs}: train_loss={avg_train_loss:.4f}")
+                log.info(
+                    f"Epoch {epoch + 1}/{self.epochs}: train_loss={avg_train_loss:.4f}"
+                )
 
         self._device_actual = device
         self._head.eval()
