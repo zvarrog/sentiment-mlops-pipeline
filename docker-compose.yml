@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin
       POSTGRES_DB: optuna
+      # Создаем дополнительные БД для Airflow метаданных и метрик
+      POSTGRES_MULTIPLE_DATABASES: airflow_meta,metrics
     ports:
       - '5432:5432'
     volumes:
@@ -15,6 +17,26 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    ports:
+      - '5000:5000'
+    volumes:
+      - mlruns_data:/mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/mlflow.db
+      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+    command: >
+      mlflow server 
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:5000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   airflow:
     build:
@@ -28,8 +50,10 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://admin:admin@postgres:5432/airflow_meta'
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
+      # Соединения с БД
+      AIRFLOW_CONN_METRICS_DB: 'postgresql://admin:admin@postgres:5432/metrics'
       OPTUNA_STORAGE: 'postgresql+psycopg2://admin:admin@postgres:5432/optuna'
-      MLFLOW_TRACKING_URI: 'file:/opt/airflow/mlruns'
+      MLFLOW_TRACKING_URI: 'http://mlflow:5000'
       JAVA_HOME: /usr/lib/jvm/default-java
       PYTHONPATH: /opt/airflow
       GIT_PYTHON_REFRESH: 'quiet'
@@ -49,7 +73,15 @@ services:
     ports:
       - '8080:8080'
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8080/health']
       interval: 30s
@@ -86,8 +118,61 @@ services:
       - /tmp
     cap_drop:
       - ALL
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    depends_on:
+      - api
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:9090/-/healthy']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: ''
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000/api/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgdata:
   mlruns_data:
   airflow_logs:
+  prometheus_data:
+  grafana_data:

@@ -68,6 +68,12 @@ OPTUNA_N_TRIALS = int(os.getenv("OPTUNA_N_TRIALS", "30"))
 OPTUNA_STORAGE = os.getenv("OPTUNA_STORAGE", "sqlite:///optuna_study.db")
 STUDY_BASE_NAME = os.getenv("STUDY_BASE_NAME", "kindle_optuna")
 
+# === Connection Pooling для PostgreSQL ===
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "3600"))
+
 # === Дополнительные параметры ===
 N_FOLDS = int(os.getenv("N_FOLDS", "1"))
 TRAIN_DEVICE = os.getenv("TRAIN_DEVICE", "cpu")  # "cpu" или "cuda"
@@ -80,10 +86,23 @@ DISTILBERT_TIMEOUT_SEC = int(os.getenv("DISTILBERT_TIMEOUT_SEC", "1200"))
 MEMORY_WARNING_MB = int(
     os.getenv("MEMORY_WARNING_MB", "2048")
 )  # лимит предупреждения о памяти
-# TFIDF_MAX_FEATURES_MIN/MAX — диапазон признаков для TF-IDF. Чем больше MAX, тем выше качество, но медленнее обучение и больше расход памяти.
+
+# Адаптивный TF-IDF max_features на основе размера датасета
+# Для малых датасетов (<100K) используем меньше фичей, для больших (>500K) - больше
+def get_tfidf_max_features_range(dataset_size: int) -> tuple[int, int, int]:
+    """Вычисляет диапазон max_features для TF-IDF на основе размера датасета."""
+    if dataset_size < 100_000:
+        return (1000, 3000, 500)  # min, max, step
+    elif dataset_size < 500_000:
+        return (2000, 6000, 500)
+    else:
+        return (3000, 10000, 1000)
+
+
 TFIDF_MAX_FEATURES_MIN = int(os.getenv("TFIDF_MAX_FEATURES_MIN", "2000"))
 TFIDF_MAX_FEATURES_MAX = int(os.getenv("TFIDF_MAX_FEATURES_MAX", "6000"))
 TFIDF_MAX_FEATURES_STEP = int(os.getenv("TFIDF_MAX_FEATURES_STEP", "500"))
+
 # FORCE_SVD_THRESHOLD_MB — порог, после которого включается SVD для снижения размерности. Чем выше порог, тем выше качество, но медленнее обучение.
 FORCE_SVD_THRESHOLD_MB = int(os.getenv("FORCE_SVD_THRESHOLD_MB", "4000"))
 

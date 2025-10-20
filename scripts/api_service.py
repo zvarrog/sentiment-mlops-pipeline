@@ -1,11 +1,23 @@
+import asyncio
 import json
+import signal
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Histogram,
+    generate_latest,
+)
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from .feature_contract import FeatureContract
 
@@ -24,6 +36,40 @@ log = setup_auto_logging()
 BEST_MODEL_PATH = MODEL_FILE_DIR / "best_model.joblib"
 META_PATH = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
 BASELINE_NUMERIC_PATH = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
+
+
+# === Graceful Shutdown ===
+shutdown_event = asyncio.Event()
+
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown."""
+    log.info(f"Получен сигнал {signum}, начинаю graceful shutdown...")
+    shutdown_event.set()
+
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+
+# === Prometheus метрики ===
+REQUEST_COUNT = Counter(
+    "api_requests_total",
+    "Total API requests",
+    ["method", "endpoint", "status"],
+)
+
+REQUEST_DURATION = Histogram(
+    "api_request_duration_seconds",
+    "API request duration",
+    ["method", "endpoint"],
+)
+
+PREDICTION_COUNT = Counter(
+    "predictions_total",
+    "Total predictions made",
+    ["model_name"],
+)
 
 
 class PredictRequest(BaseModel):
@@ -69,16 +115,51 @@ class MetadataResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения: загрузка артефактов при старте, очистка при завершении."""
-    # Инициализация при старте
+    # Startup
     _load_artifacts()
+    log.info("API запущен и готов принимать запросы")
+
     yield
+
+    # Shutdown
+    log.info("Завершаю обработку текущих запросов...")
+    await asyncio.sleep(2)
+
+    # Очищаем ресурсы
     for attr in ("MODEL", "META", "NUMERIC_DEFAULTS", "FEATURE_CONTRACT"):
         if hasattr(app.state, attr):
             delattr(app.state, attr)
-    log.info("Ресурсы приложения освобождены")
+
+    log.info("API корректно остановлен")
 
 
 app = FastAPI(title="Kindle Reviews API", version="1.0.0", lifespan=lifespan)
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Middleware для сбора метрик Prometheus."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start
+
+    REQUEST_COUNT.labels(
+        method=request.method,
+        endpoint=request.url.path,
+        status=response.status_code,
+    ).inc()
+
+    REQUEST_DURATION.labels(
+        method=request.method,
+        endpoint=request.url.path,
+    ).observe(duration)
+
+    return response
 
 
 @app.middleware("http")
@@ -218,6 +299,12 @@ def health():
     }
 
 
+@app.get("/metrics")
+def metrics():
+    """Prometheus metrics endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/metadata", response_model=MetadataResponse)
 def get_metadata():
     """Возвращает метаданные модели и информацию о признаках."""
@@ -246,13 +333,19 @@ def get_metadata():
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest):
+@limiter.limit("100/minute")
+def predict(request: Request, req: PredictRequest):
     """Предсказание для списка текстов с опциональными числовыми признаками."""
     model = getattr(app.state, "MODEL", None)
     if model is None:
         raise HTTPException(status_code=500, detail="Модель не загружена")
     if not req.texts:
         raise HTTPException(status_code=400, detail="Список texts пуст")
+
+    # Логируем метрику predictions
+    meta = getattr(app.state, "META", {})
+    model_name = meta.get("best_model", "unknown")
+    PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.texts))
 
     name = model.__class__.__name__.lower()
     if "distil" in name:
@@ -287,13 +380,19 @@ def predict(req: PredictRequest):
 
 
 @app.post("/batch_predict", response_model=BatchPredictResponse)
-def batch_predict(req: BatchPredictRequest):
+@limiter.limit("50/minute")
+def batch_predict(request: Request, req: BatchPredictRequest):
     """Пакетное предсказание для списка объектов с полными данными."""
     model = getattr(app.state, "MODEL", None)
     if model is None:
         raise HTTPException(status_code=500, detail="Модель не загружена")
     if not req.data:
         raise HTTPException(status_code=400, detail="Список data пуст")
+
+    # Логируем метрику predictions
+    meta = getattr(app.state, "META", {})
+    model_name = meta.get("best_model", "unknown")
+    PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.data))
 
     # Строим DataFrame из всех объектов
     texts = []

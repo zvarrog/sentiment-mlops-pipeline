@@ -1,14 +1,8 @@
-"""Простой скрипт для скачивания и распаковки kindle_reviews.csv с удалением первого столбца, чтобы избежать предупреждений.
-
-Модуль вызывает kaggle CLI через subprocess, скачивает zip-архив датасета
-в папку RAW_DATA_DIR, извлекает файл CSV и удаляет zip.
-
-Параметры задаются в `config.py` (FORCE_DOWNLOAD, KAGGLE_DATASET, CSV_NAME,
-RAW_DATA_DIR, ZIP_FILENAME).
-"""
+"""Скачивание и распаковка kindle_reviews.csv с Kaggle."""
 
 import contextlib
 import subprocess
+import time
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -21,25 +15,62 @@ from .logging_config import setup_auto_logging
 ZIP_FILENAME = RAW_DATA_DIR / "kindle-reviews.zip"
 CSV_PATH = RAW_DATA_DIR / CSV_NAME
 
+# Настройки retry для скачивания с Kaggle
+MAX_RETRIES = 3
+RETRY_DELAY_SEC = 5
+
 
 def remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
-    """
-    Удаляет лишний первый столбец-индекс в CSV.
-
-    Функция проверяет имя первого столбца и, если он похож на индекс, удаляет этот столбец
-    и перезаписывает CSV без индекса.
-
-    Args:
-        csv_path (str): путь к CSV-файлу (по умолчанию используется CSV_PATH из config.py).
-    """
+    """Удаляет лишний первый столбец-индекс в CSV, если он присутствует."""
     df = pd.read_csv(str(csv_path))
     first_col = str(df.columns[0])
-    if first_col in ("", "_c0"):
-        df.drop(df.columns[0], axis=1).to_csv(csv_path, index=False)
+
+    # Проверяем различные варианты названий index-колонок
+    if first_col in ("", "Unnamed: 0", "_c0") or first_col.startswith("Unnamed"):
+        df = df.iloc[:, 1:]  # Удаляем первую колонку
+        df.to_csv(csv_path, index=False)
+        log.info(f"Удалён индекс-столбец '{first_col}' из {csv_path}")
 
 
 # Используем централизованное логирование
 log = setup_auto_logging()
+
+
+def _download_with_retry(max_retries: int = MAX_RETRIES) -> None:
+    """Скачивание датасета с retry-логикой при ошибках сети."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            log.info(
+                f"Попытка {attempt}/{max_retries}: скачивание датасета '{KAGGLE_DATASET}'..."
+            )
+            subprocess.run(
+                [
+                    "kaggle",
+                    "datasets",
+                    "download",
+                    "-d",
+                    KAGGLE_DATASET,
+                    "-p",
+                    str(RAW_DATA_DIR),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            log.info("Датасет успешно скачан")
+            return
+
+        except subprocess.CalledProcessError as e:
+            log.warning(
+                f"Ошибка при скачивании (попытка {attempt}/{max_retries}): {e.stderr}"
+            )
+
+            if attempt < max_retries:
+                log.info(f"Повтор через {RETRY_DELAY_SEC} секунд...")
+                time.sleep(RETRY_DELAY_SEC)
+            else:
+                log.error("Достигнут лимит попыток скачивания")
+                raise
 
 
 def main() -> Path:
@@ -69,18 +100,7 @@ def main() -> Path:
 
     log.info("Скачиваание датасета '%s' в %s...", KAGGLE_DATASET, str(RAW_DATA_DIR))
     try:
-        subprocess.run(
-            [
-                "kaggle",
-                "datasets",
-                "download",
-                "-d",
-                KAGGLE_DATASET,
-                "-p",
-                str(RAW_DATA_DIR),
-            ],
-            check=True,
-        )
+        _download_with_retry()
     except subprocess.CalledProcessError as e:
         log.error(
             "Ошибка при скачивании датасета через kaggle CLI: %s\nПроверьте наличие файла kaggle.json и доступ к API.\n"
