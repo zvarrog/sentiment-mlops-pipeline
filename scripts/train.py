@@ -288,8 +288,11 @@ def objective(
     )
     try:
         trial.set_user_attr("n_train_samples", int(len(X_train)))
-    except Exception:
-        pass
+    except (TypeError, ValueError):
+        # Невалидная длина входа — пропускаем атрибут без падения
+        bare_len = getattr(X_train, "shape", [None])[0]
+        if isinstance(bare_len, int):
+            trial.set_user_attr("n_train_samples", bare_len)
     mlflow.log_param("model", model_kind.value)
 
     def _evaluate_with_cv_or_holdout(is_distilbert: bool) -> float:
@@ -696,10 +699,12 @@ def run():
             )
             final_pipeline = build_pipeline(fixed_trial, best_model)
             final_pipeline.fit(X_full, y_full)
-        # Атомарная запись модели
+        # Атомарная запись модели (локально)
         tmp_model_path = best_path.with_suffix(".joblib.tmp")
         joblib.dump(final_pipeline, tmp_model_path)
         tmp_model_path.replace(best_path)
+
+        # Логируем артефакт для обратной совместимости
         mlflow.log_artifact(str(best_path))
 
         # Сохраняем baseline статистики только когда модель обновляется/создаётся
@@ -712,13 +717,100 @@ def run():
         tmp_bs.replace(bs_path)
         mlflow.log_artifact(str(bs_path))
 
-        # Тестовая оценка
+        # Тестовая оценка (до регистрации в MLflow Registry)
         if best_model is ModelKind.distilbert:
             test_preds = final_pipeline.predict(X_test["reviewText"])
         else:
             test_preds = final_pipeline.predict(X_test)
         test_metrics = compute_metrics(y_test, test_preds)
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
+
+        # Регистрация модели в MLflow Model Registry (перенесено после вычисления test_metrics)
+        try:
+            model_name = "sentiment_kindle_model"
+
+            # Логируем модель как MLflow artifact с signature
+            if best_model is ModelKind.distilbert:
+                # Для DistilBERT используем pyfunc wrapper
+                import mlflow.pyfunc
+
+                class DistilBertWrapper(mlflow.pyfunc.PythonModel):
+                    def load_context(self, context):
+                        import joblib
+
+                        self.model = joblib.load(context.artifacts["model_path"])
+
+                    def predict(self, context, model_input):
+                        if isinstance(model_input, pd.DataFrame):
+                            texts = model_input["reviewText"].tolist()
+                        else:
+                            texts = model_input
+                        return self.model.predict(texts)
+
+                artifacts = {"model_path": str(best_path)}
+                mlflow.pyfunc.log_model(
+                    artifact_path="model",
+                    python_model=DistilBertWrapper(),
+                    artifacts=artifacts,
+                    registered_model_name=model_name,
+                )
+            else:
+                # Для sklearn моделей используем встроенную поддержку
+                import mlflow.sklearn
+
+                mlflow.sklearn.log_model(
+                    sk_model=final_pipeline,
+                    artifact_path="model",
+                    registered_model_name=model_name,
+                )
+
+            # Получаем последнюю версию и переводим в Staging
+            from mlflow.tracking import MlflowClient
+
+            client = MlflowClient()
+
+            # Находим последнюю версию зарегистрированной модели
+            latest_versions = client.get_latest_versions(model_name, stages=["None"])
+            if latest_versions:
+                latest_version = latest_versions[0].version
+
+                # Переводим в Staging для валидации
+                client.transition_model_version_stage(
+                    name=model_name,
+                    version=latest_version,
+                    stage="Staging",
+                    archive_existing_versions=False,
+                )
+                log.info(
+                    "Модель %s версия %s зарегистрирована в MLflow Registry (stage: Staging)",
+                    model_name,
+                    latest_version,
+                )
+
+                # Если метрики хорошие, переводим в Production
+                if test_metrics.get("f1_macro", 0) >= 0.85:
+                    # Архивируем старые Production версии
+                    client.transition_model_version_stage(
+                        name=model_name,
+                        version=latest_version,
+                        stage="Production",
+                        archive_existing_versions=True,
+                    )
+                    log.info(
+                        "Модель %s версия %s переведена в Production (F1=%.4f >= 0.85)",
+                        model_name,
+                        latest_version,
+                        test_metrics.get("f1_macro", 0),
+                    )
+                else:
+                    log.warning(
+                        "Модель %s версия %s остаётся в Staging (F1=%.4f < 0.85)",
+                        model_name,
+                        latest_version,
+                        test_metrics.get("f1_macro", 0),
+                    )
+        except Exception as e:
+            log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
 
         # Артефакты: confusion matrix + classification report
         from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
@@ -772,7 +864,7 @@ def run():
 
                     # Собираем плоский датафрейм: number, value, затем параметры
                     all_param_keys = sorted(
-                        {key for t in top_trials for key in t.params.keys()}
+                        {key for t in top_trials for key in t.params}
                     )
                     rows = []
                     for t in top_trials:

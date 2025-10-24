@@ -367,8 +367,15 @@ else:
         log.info("Валидация сохранённых данных пропущена: RUN_DATA_VALIDATION=0")
 
     log.info("Обработка завершена.")
-    # Безопасная остановка Spark: JVM могла завершиться к этому моменту
+    # Безопасная остановка Spark и закрытие Py4J gateway
     try:
         spark.stop()
     except Exception as _e:
         log.warning("Spark JVM уже остановлена или недоступна: %s", _e)
+    # Пытаемся закрыть Py4J gateway, чтобы не оставлять фоновые процессы
+    try:
+        sc = getattr(spark, "_sc", None)
+        if sc is not None and getattr(sc, "_gateway", None) is not None:
+            sc._gateway.close()
+    except Exception as _e:
+        log.debug("Не удалось закрыть Py4J gateway: %s", _e)

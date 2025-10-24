@@ -1,7 +1,12 @@
 """Shared fixtures для тестов."""
 
 import os
+from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
 
+import mlflow
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -46,3 +51,100 @@ def temp_artifact_dir(tmp_path):
     artifact_dir = tmp_path / "artefacts"
     artifact_dir.mkdir()
     return artifact_dir
+
+
+@pytest.fixture(scope="session")
+def sample_parquet_files_small(tmp_path_factory) -> Iterator[Path]:
+    """Создаёт небольшие parquet-файлы для быстрых интеграционных тестов.
+
+    Использует переменную окружения TEST_PER_CLASS (по умолчанию 500)
+    для генерации сбалансированного датасета с 5 классами.
+    """
+    per_class = int(os.getenv("TEST_PER_CLASS", "500"))
+    classes = [1, 2, 3, 4, 5]
+    n_total = per_class * len(classes)
+
+    # Генерация синтетических данных
+    np.random.seed(42)
+    data = {
+        "reviewText": np.random.choice(
+            [
+                "хорошо",
+                "плохо",
+                "отлично",
+                "не понравилось",
+                "супер",
+                "ужасно",
+                "нормально",
+                "великолепно",
+            ],
+            size=n_total,
+        ),
+        "overall": np.repeat(classes, per_class),
+        "text_len": np.random.randint(10, 300, size=n_total).astype(float),
+        "word_count": np.random.randint(1, 80, size=n_total).astype(float),
+    }
+    df = pd.DataFrame(data)
+
+    # Создаём временную директорию
+    processed_dir = tmp_path_factory.mktemp("data") / "processed"
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    # Сохраняем train/val/test splits
+    df.to_parquet(processed_dir / "train.parquet", index=False)
+    df.iloc[:per_class].to_parquet(processed_dir / "val.parquet", index=False)
+    df.iloc[per_class : per_class * 2].to_parquet(
+        processed_dir / "test.parquet", index=False
+    )
+
+    # Обновляем переменные окружения для загрузчика данных
+    old_processed_dir = os.environ.get("PROCESSED_DATA_DIR")
+    os.environ["PROCESSED_DATA_DIR"] = str(processed_dir)
+
+    yield processed_dir
+
+    # Восстанавливаем переменную окружения
+    if old_processed_dir:
+        os.environ["PROCESSED_DATA_DIR"] = old_processed_dir
+
+
+@pytest.fixture(autouse=True)
+def mock_mlflow(monkeypatch):
+    """Подменяет MLflow вызовы на noop для избежания зависимости от внешних сервисов."""
+
+    class DummyRun:
+        info = SimpleNamespace(run_id="dummy_run_id")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    # Мокаем основные MLflow функции
+    monkeypatch.setattr(mlflow, "start_run", lambda *a, **k: DummyRun())
+    monkeypatch.setattr(mlflow, "log_artifact", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "log_artifacts", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "log_metrics", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "log_metric", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "log_params", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "log_param", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda *a, **k: None)
+    monkeypatch.setattr(mlflow, "set_experiment", lambda *a, **k: None)
+
+    # Мокаем sklearn.log_model и pyfunc.log_model
+    try:
+        import mlflow.sklearn
+
+        monkeypatch.setattr(mlflow.sklearn, "log_model", lambda *a, **k: None)
+    except (ImportError, AttributeError):
+        pass
+
+    try:
+        import mlflow.pyfunc
+
+        monkeypatch.setattr(mlflow.pyfunc, "log_model", lambda *a, **k: None)
+    except (ImportError, AttributeError):
+        pass
+
+    yield

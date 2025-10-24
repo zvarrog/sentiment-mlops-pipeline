@@ -1,9 +1,12 @@
 services:
   postgres:
     image: postgres:15
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      # В проде используем файл секрета, пароль напрямую не задаём
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: optuna
       # Создаем дополнительные БД для Airflow метаданных и метрик
       POSTGRES_MULTIPLE_DATABASES: airflow_meta,metrics
@@ -12,6 +15,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    secrets:
+      - postgres_password
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U admin -d optuna']
       interval: 5s
@@ -47,12 +52,15 @@ services:
     environment:
       # Docker-специфичные переменные
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__PARALLELISM: '16' # общее число параллельных задач
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: '8'
+      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: '1'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://admin:admin@postgres:5432/airflow_meta'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow_meta'
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
       # Соединения с БД
-      AIRFLOW_CONN_METRICS_DB: 'postgresql://admin:admin@postgres:5432/metrics'
-      OPTUNA_STORAGE: 'postgresql+psycopg2://admin:admin@postgres:5432/optuna'
+      AIRFLOW_CONN_METRICS_DB: 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/metrics'
+      OPTUNA_STORAGE: 'postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/optuna'
       MLFLOW_TRACKING_URI: 'http://mlflow:5000'
       JAVA_HOME: /usr/lib/jvm/default-java
       PYTHONPATH: /opt/airflow
@@ -165,10 +173,13 @@ services:
       - '3000:3000'
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_INSTALL_PLUGINS: ''
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     depends_on:
       - prometheus
     restart: unless-stopped
@@ -192,3 +203,7 @@ volumes:
   airflow_logs:
   prometheus_data:
   grafana_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
