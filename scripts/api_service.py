@@ -38,21 +38,19 @@ META_PATH = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
 BASELINE_NUMERIC_PATH = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
 
 
-# === Graceful Shutdown ===
 shutdown_event = asyncio.Event()
 
 
 def signal_handler(signum, frame):
-    """Обработчик сигналов для graceful shutdown."""
-    log.info(f"Получен сигнал {signum}, начинаю graceful shutdown...")
+    """Обработчик системных сигналов для корректного завершения приложения."""
+    log.info("Получен сигнал %s, инициирую shutdown", signum)
     shutdown_event.set()
 
 
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-
-# === Prometheus метрики ===
+# Prometheus метрики
 REQUEST_COUNT = Counter(
     "api_requests_total",
     "Total API requests",
@@ -73,7 +71,7 @@ PREDICTION_COUNT = Counter(
 
 
 class PredictRequest(BaseModel):
-    """Запрос на предсказание для списка текстов с опциональными числовыми признаками."""
+    """Запрос: список текстов и опциональные числовые признаки."""
 
     texts: list[str]
     # Опциональные числовые признаки для более точного предсказания
@@ -81,7 +79,7 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    """Ответ с предсказаниями, вероятностями и предупреждениями валидации."""
+    """Метки, вероятности и опциональные предупреждения."""
 
     labels: list[int]
     probs: list[list[float]] | None = None
@@ -89,7 +87,7 @@ class PredictResponse(BaseModel):
 
 
 class BatchPredictRequest(BaseModel):
-    """Запрос на пакетное предсказание для списка объектов с полными данными."""
+    """Пакетный запрос: список объектов с полем reviewText и числовыми признаками."""
 
     data: list[
         dict[str, Any]
@@ -97,7 +95,7 @@ class BatchPredictRequest(BaseModel):
 
 
 class BatchPredictResponse(BaseModel):
-    """Ответ с пакетными предсказаниями и предупреждениями для каждого объекта."""
+    """Результат пакетного предсказания и предупреждения по объектам."""
 
     predictions: list[dict[str, Any]]
     # предупреждения по каждому объекту: item_{i} -> {category: [messages]}
@@ -114,7 +112,7 @@ class MetadataResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Управление жизненным циклом приложения: загрузка артефактов при старте, очистка при завершении."""
+    """Загрузка артефактов при старте, мягкое завершение при shutdown."""
     # Startup
     _load_artifacts()
     log.info("API запущен и готов принимать запросы")
@@ -164,7 +162,7 @@ async def metrics_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
-    """Middleware: добавляет/прокидывает X-Request-ID и устанавливает trace_id."""
+    """Middleware: добавляет X-Request-ID в заголовок и устанавливает trace_id."""
     req_id = request.headers.get("X-Request-ID")
     if not req_id:
         # Простой вариант без зависимостей: используем id объекта и время
@@ -211,10 +209,7 @@ def _load_artifacts():
 def _build_dataframe(
     texts: list[str], numeric_features: dict[str, list[float]] | None = None
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Строит DataFrame для предсказания из текстов и опциональных числовых признаков.
-
-    Возвращает DataFrame и список проигнорированных признаков (неправильная длина или неизвестные).
-    """
+    """Собирает DataFrame для предсказания и возвращает список проигнорованных признаков."""
     df = pd.DataFrame({"reviewText": texts})
     ignored_features = []
 
@@ -238,11 +233,7 @@ def _build_dataframe(
 
     # Автоматическое вычисление текстовых признаков через mapping
     def _text_feature_extractors():
-        """Генераторы текстовых признаков из reviewText.
-
-        Важно: эти экстракторы должны соответствовать логике в spark_process.py!
-        Теперь используем TextBlob для sentiment анализа вместо простых словарей.
-        """
+        """Набор извлечения простых текстовых признаков (len, counts, sentiment)."""
 
         def _sentiment_textblob(s: pd.Series) -> pd.Series:
             from textblob import TextBlob

@@ -1,11 +1,4 @@
-"""DAG с мониторингом длительности выполнения задач.
-
-Расширенная версия базового pipeline с добавлением:
-    - Логирование длительности каждой задачи в Postgres
-    - Колбеки успеха/ошибок с записью метрик
-    - Отслеживание производительности во времени
-    - Аналитика по длительности этапов пайплайна
-"""
+"""DAG с логированием метрик производительности задач в PostgreSQL."""
 
 from datetime import datetime
 
@@ -47,14 +40,7 @@ except ImportError:
             pass
 
 
-_DOC = """
-DAG kindle_reviews_monitored_pipeline.
-
-Полный пайплайн обучения с мониторингом производительности:
-- Логирование длительности каждой задачи в БД metrics
-- Отслеживание успехов и ошибок
-- Аналитика производительности этапов
-"""
+_DOC = "Пайплайн с мониторингом производительности задач через PostgreSQL."
 
 default_args = {
     "start_date": datetime(2025, 1, 1),
@@ -62,10 +48,8 @@ default_args = {
 
 
 def log_task_duration(**context):
-    """Колбек для логирования длительности задачи в БД metrics."""
     ti: TaskInstance = context["task_instance"]
 
-    # Проверяем что задача завершилась и есть длительность
     if not ti.duration:
         return
 
@@ -89,11 +73,9 @@ def log_task_duration(**context):
 
 
 def log_task_failure(**context):
-    """Колбек для логирования ошибки выполнения задачи."""
     ti: TaskInstance = context["task_instance"]
 
     try:
-        # Длительность может быть None если задача упала быстро
         duration = ti.duration if ti.duration else 0
 
         pg_hook = PostgresHook(postgres_conn_id="metrics_db")
@@ -111,7 +93,6 @@ def log_task_failure(**context):
 
 
 def _setup_env(**context):
-    """Настройка окружения для всех задач."""
     import os
     from pathlib import Path
 
@@ -130,7 +111,6 @@ def _setup_env(**context):
 
 
 def _task_download(**context):
-    """Загрузка данных с Kaggle."""
     _setup_env(**context)
     import os
 
@@ -152,7 +132,6 @@ def _task_download(**context):
 
 
 def _task_validate(**context):
-    """Валидация данных."""
     _setup_env(**context)
     from scripts.data_validation import main as validate_main
     from scripts.logging_config import setup_auto_logging
@@ -169,7 +148,6 @@ def _task_validate(**context):
 
 
 def _task_process(**context):
-    """Обработка данных через Spark."""
     _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
     from scripts.spark_process import TEST_PATH, TRAIN_PATH, VAL_PATH
@@ -186,7 +164,6 @@ def _task_process(**context):
 
 
 def _task_train(**context):
-    """Обучение модели с логированием метрик."""
     _setup_env(**context)
     import json
     import os
@@ -197,7 +174,6 @@ def _task_train(**context):
     log = setup_auto_logging()
     log.info("Обучение модели")
 
-    # Настраиваем Optuna storage
     try:
         from airflow.models import Variable
 
@@ -220,7 +196,6 @@ def _task_train(**context):
 
     train_run()
 
-    # Читаем метаданные модели для логирования в БД
     meta_path = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
     if meta_path.exists():
         with open(meta_path, encoding="utf-8") as f:
@@ -230,7 +205,6 @@ def _task_train(**context):
             pg_hook = PostgresHook(postgres_conn_id="metrics_db")
             ti = context["task_instance"]
 
-            # Логируем метрики модели
             model_name = meta.get("best_model", "unknown")
             val_f1 = meta.get("best_val_f1_macro", 0.0)
             test_metrics = meta.get("test_metrics", {})
@@ -277,7 +251,6 @@ def _task_train(**context):
 
 
 def _task_drift_monitor(**context):
-    """Мониторинг дрейфа данных."""
     _setup_env(**context)
     import os
     from pathlib import Path

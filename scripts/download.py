@@ -25,7 +25,7 @@ def remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
     df = pd.read_csv(str(csv_path))
     first_col = str(df.columns[0])
 
-    # Проверяем различные варианты названий index-колонок
+    # Удаляем index-колонку с распространёнными именами
     if first_col in ("", "Unnamed: 0", "_c0") or first_col.startswith("Unnamed"):
         df = df.iloc[:, 1:]  # Удаляем первую колонку
         df.to_csv(csv_path, index=False)
@@ -98,7 +98,7 @@ def main() -> Path:
         )
         raise
 
-    log.info("Скачиваание датасета '%s' в %s...", KAGGLE_DATASET, str(RAW_DATA_DIR))
+    log.info("Скачивание датасета '%s' в %s...", KAGGLE_DATASET, str(RAW_DATA_DIR))
     try:
         _download_with_retry()
     except subprocess.CalledProcessError as e:

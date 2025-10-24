@@ -31,12 +31,7 @@ except ImportError:
             return other
 
 
-_DOC = (
-    "DAG kindle_reviews_pipeline.\n"
-    "- Параметры управляются через dag.params (force_* и пути).\n"
-    "- Значимые настройки (e.g. OPTUNA_STORAGE) читаются из Airflow Variables/Connections.\n"
-    "- Путь артефактов прокидывается через XCom между задачами."
-)
+_DOC = "Пайплайн обработки и обучения модели на Kindle отзывах с поддержкой валидации, drift injection и мониторинга."
 
 default_args = {
     "start_date": datetime(2025, 1, 1),
@@ -67,7 +62,6 @@ with DAG(
 ) as dag:
 
     def _to_bool(x, default: bool = False) -> bool:
-        """Нормализует булевы значения из dag.params/dagrun.conf: поддерживает bool/str/числа."""
         if x is None:
             return bool(default)
         if isinstance(x, bool):
@@ -79,7 +73,6 @@ with DAG(
         return bool(x)
 
     def _get_value(context, name: str, default: str | None = None) -> str:
-        """Извлекает строковый параметр с приоритетом: dag_run.conf > dag.params > default."""
         # dag_run.conf
         try:
             dr = context.get("dag_run") if context else None
@@ -96,15 +89,12 @@ with DAG(
         return str(default or "")
 
     def _with_env(context=None, **kwargs):
-        """Устанавливает переменные среды для задач DAG."""
         import os
         from pathlib import Path as _P
 
-        # централизованно проставляем флаги
         for k, v in kwargs.items():
             os.environ[k] = str(int(_to_bool(v)))
 
-        # База для относительных путей — AIRFLOW_HOME или /opt/airflow
         base = os.environ.get("AIRFLOW_HOME", "/opt/airflow")
 
         def _abs(p: str) -> str:
@@ -116,7 +106,6 @@ with DAG(
             except Exception:
                 return p
 
-        # Прокидываем пути для скриптов
         raw_p = _get_value(context, "raw_data_dir", "data/raw")
         proc_p = _get_value(context, "processed_data_dir", "data/processed")
         model_dir_p = _get_value(context, "model_dir", "artefacts")
@@ -132,7 +121,6 @@ with DAG(
         os.environ["MODEL_ARTEFACTS_DIR"] = _abs(model_arts_p)
         os.environ["DRIFT_ARTEFACTS_DIR"] = _abs(drift_arts_p)
 
-        # Диагностика
         try:
             from scripts.logging_config import setup_auto_logging as _alog
 
@@ -149,22 +137,17 @@ with DAG(
             pass
 
     def _get_flag(context, name: str, default: bool = False) -> bool:
-        """Извлекает флаг с приоритетом: dag_run.conf > dag.params > default, с преобразованием строк."""
         try:
             dr = context.get("dag_run")
             if dr and getattr(dr, "conf", None) is not None and name in dr.conf:
                 return _to_bool(dr.conf.get(name), default)
         except Exception:
-            # Не считаем ошибкой отсутствие dag_run/conf в локальном запуске
             pass
-        # Фолбэк на dag.params, затем на default
         if name in dag.params:
             return _to_bool(dag.params.get(name), default)
         return bool(default)
 
     def _task_download(**context):
-        """Загружает данные с Kaggle с поддержкой принудительного обновления."""
-        # Проставляем флаг и выполняем явное скачивание при необходимости
         _with_env(context, FORCE_DOWNLOAD=_get_flag(context, "force_download", False))
         import os
 
@@ -196,12 +179,9 @@ with DAG(
             log.error("Ошибка в downloading: %s", e)
             raise
 
-        # Возвращаем абсолютный путь к сырому CSV (для XCom)
         return str(csv_abs)
 
     def _task_validate_data(**context):
-        """Валидирует качество данных с поддержкой пропуска через флаги."""
-        # Устанавливаем флаг валидации из DAG params
         flag_value = _get_flag(context, "run_data_validation", True)
         _with_env(context, RUN_DATA_VALIDATION=flag_value)
 
@@ -211,7 +191,6 @@ with DAG(
 
         log = setup_auto_logging()
 
-        # Проверяем флаг валидации
         run_validation = os.environ.get("RUN_DATA_VALIDATION", "1").lower() in {
             "1",
             "true",
@@ -232,14 +211,9 @@ with DAG(
             return "validation_success"
         except Exception as e:
             log.error("Ошибка валидации данных: %s", e)
-            raise  # Прерываем DAG при ошибке валидации
+            raise
 
     def _task_inject_drift(**context):
-        """Отдельная задача инъекции синтетического дрейфа.
-
-        Не прерывает DAG при INJECT_SYNTHETIC_DRIFT=0, только при реальных ошибках.
-        """
-        # Устанавливаем флаг инъекции из DAG params
         _with_env(
             context,
             INJECT_SYNTHETIC_DRIFT=_get_flag(context, "inject_synthetic_drift", False),
@@ -253,7 +227,6 @@ with DAG(
             from scripts.drift_injection import main as inject_main
 
             result = inject_main()
-            # Не прерываем DAG если инъекция просто отключена
             if result.get("status") in ["skipped", "no_changes"]:
                 return result
             elif result.get("status") == "error":
@@ -272,23 +245,19 @@ with DAG(
             raise
 
     def _task_process(**context):
-        """Обрабатывает данные через Spark с поддержкой принудительной перезаписи."""
         _with_env(
             context,
             FORCE_PROCESS=_get_flag(context, "force_process", False),
             RUN_DRIFT_MONITOR=_get_flag(context, "run_drift_monitor", False),
             RUN_DATA_VALIDATION=_get_flag(context, "run_data_validation", True),
         )
-        # Возвращаем пути к parquet (для XCom)
         from scripts.spark_process import TEST_PATH, TRAIN_PATH, VAL_PATH
 
         return {"train": str(TRAIN_PATH), "val": str(VAL_PATH), "test": str(TEST_PATH)}
 
     def _task_train(**context):
-        """Обучает модель с автоматическим выбором Optuna storage и поддержкой принудительного переобучения."""
         import os
 
-        # Предпочитаем Variable OPTUNA_STORAGE, иначе env/дефолт
         try:
             from airflow.models import Variable
 
@@ -331,7 +300,6 @@ with DAG(
     )
 
     def _task_drift_monitor(**context):
-        """Задача мониторинга дрейфа по test.parquet с сохранением отчёта в артефакты."""
         import os
         from pathlib import Path
 
@@ -339,14 +307,12 @@ with DAG(
 
         log = setup_auto_logging()
 
-        # Читаем флаг из DAG
         run_dm = _get_flag(context, "run_drift_monitor", False)
         _with_env(context, RUN_DRIFT_MONITOR=run_dm)
         if not run_dm:
             log.info("Мониторинг дрейфа пропущен: RUN_DRIFT_MONITOR=0")
             return "drift_monitor_skipped"
 
-        # Пути
         processed_dir = Path(os.environ.get("PROCESSED_DATA_DIR", "data/processed"))
         test_parquet = processed_dir / "test.parquet"
         if not test_parquet.exists():
@@ -356,7 +322,6 @@ with DAG(
         try:
             from scripts.drift_monitor import run_drift_monitor
 
-            # Каталог для отчёта — из DRIFT_ARTEFACTS_DIR
             out_dir = Path(
                 os.environ.get("DRIFT_ARTEFACTS_DIR", "artefacts/drift_artefacts")
             )

@@ -95,12 +95,12 @@ def validate_column_schema(
     errors = []
     warnings = []
 
-    # Проверяем обязательные колонки
+    # Обязательные колонки
     missing_required = schema.required_columns - set(df.columns)
     if missing_required:
         errors.append(f"Отсутствуют обязательные колонки: {missing_required}")
 
-    # Проверяем типы колонок
+    # Типы колонок
     for col, expected_types in schema.column_types.items():
         if col in df.columns:
             actual_type = str(df[col].dtype)
@@ -116,7 +116,7 @@ def validate_column_schema(
                         f"Колонка '{col}': ожидался тип {expected_types}, найден {actual_type}"
                     )
 
-    # Проверяем неожиданные колонки
+    # Неожиданные колонки
     all_expected = schema.required_columns | schema.optional_columns
     unexpected = set(df.columns) - all_expected
     if unexpected:
@@ -132,19 +132,19 @@ def validate_data_quality(
     errors = []
     warnings = []
 
-    # Проверяем размер датасета
+    # Размер датасета
     if len(df) == 0:
         errors.append("Датасет пуст")
         return errors, warnings
 
-    # Проверяем пропуски в обязательных колонках
+    # Пропуски в обязательных колонках
     for col in schema.required_columns:
         if col in df.columns:
             null_count = df[col].isnull().sum()
             if null_count > 0:
                 errors.append(f"Колонка '{col}': {null_count} пропущенных значений")
 
-    # Проверяем диапазоны числовых значений
+    # Диапазоны числовых значений
     for col, (min_val, max_val) in schema.numeric_ranges.items():
         if col in df.columns:
             numeric_data = pd.to_numeric(df[col], errors="coerce")
@@ -168,7 +168,7 @@ def validate_data_quality(
                         f"Колонка '{col}': {above_max} значений выше максимума {max_val}"
                     )
 
-    # Проверяем текстовые ограничения
+    # Текстовые ограничения
     for col, constraints in schema.text_constraints.items():
         if col in df.columns:
             text_data = df[col].astype(str)
@@ -214,7 +214,7 @@ def validate_data_consistency(
     # Получаем схемы всех датафреймов
     schemas = {name: set(df.columns) for name, df in dataframes.items()}
 
-    # Проверяем, что схемы совпадают
+    # Схемы совпадают
     reference_schema = next(iter(schemas.values()))
     reference_name = next(iter(schemas.keys()))
 
@@ -232,7 +232,7 @@ def validate_data_consistency(
         if extra_cols:
             warnings.append(f"В '{name}' есть дополнительные колонки: {extra_cols}")
 
-    # Проверяем распределения целевой переменной
+    # Распределения целевой переменной
     if all("overall" in df.columns for df in dataframes.values()):
         distributions = {}
         for name, df in dataframes.items():
@@ -245,7 +245,7 @@ def validate_data_consistency(
             if name == reference_name:
                 continue
 
-            # Проверяем значительные различия (>10% разницы)
+            # Значительные различия (>10% разницы)
             for rating in reference_dist.index:
                 if rating in dist.index:
                     diff = abs(reference_dist[rating] - dist[rating])
@@ -310,7 +310,7 @@ def validate_parquet_file(
                 # Преобразуем все нехэшируемые типы в хэшируемые
                 df_for_dupes = df.copy()
                 for col in df_for_dupes.columns:
-                    # Проверяем первые несколько значений на нехэшируемые типы
+                    # Детектируем нехэшируемые типы в первых строках
                     sample_vals = df_for_dupes[col].dropna().head(10)
                     if len(sample_vals) > 0:
                         has_unhashable = any(
@@ -447,43 +447,44 @@ def log_validation_results(results: dict[str, DataValidationResult]) -> bool:
 
 def main() -> bool:
     """Основная функция валидации для использования в DAG.
-    
+
     Выполняет валидацию всех parquet файлов в директории processed.
     Возвращает True если все валидации прошли успешно.
     """
     from pathlib import Path
-    from scripts.settings import PROCESSED_DATA_DIR
+
     from scripts.logging_config import setup_auto_logging
-    
+    from scripts.settings import PROCESSED_DATA_DIR
+
     log = setup_auto_logging()
-    
+
     try:
         processed_dir = Path(PROCESSED_DATA_DIR)
         if not processed_dir.exists():
             log.error(f"Директория {processed_dir} не существует")
             return False
-            
+
         # Собираем все parquet файлы
         parquet_files = list(processed_dir.glob("*.parquet"))
         if not parquet_files:
             log.warning(f"Parquet файлы не найдены в {processed_dir}")
             return True  # Не ошибка если файлов пока нет
-            
+
         log.info(f"Найдено {len(parquet_files)} parquet файлов для валидации")
-        
+
         # Валидируем весь датасет
         results = validate_parquet_dataset(processed_dir)
-        
+
         # Логируем результаты и возвращаем общий статус
         all_valid = log_validation_results(results)
-        
+
         if all_valid:
             log.info("Все валидации прошли успешно")
         else:
             log.error("Обнаружены ошибки валидации")
-            
+
         return all_valid
-        
+
     except Exception as e:
         log.error(f"Критическая ошибка при валидации данных: {e}")
         return False
@@ -491,5 +492,6 @@ def main() -> bool:
 
 if __name__ == "__main__":
     import sys
+
     success = main()
     sys.exit(0 if success else 1)
