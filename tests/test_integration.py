@@ -41,8 +41,47 @@ class TestSparkProcessing:
 class TestTrainPipeline:
     """Тесты для полного цикла обучения."""
 
+    def test_train_creates_model_artifacts_fast(
+        self, tmp_path, sample_parquet_files_small
+    ):
+        """Быстрый тест обучения на небольшом датасете (~500 записей на класс).
+
+        Использует fixture sample_parquet_files_small для генерации
+        сбалансированного синтетического датасета. MLflow мокается автоматически.
+        """
+        import os
+
+        model_dir = tmp_path / "models"
+        model_artefacts_dir = model_dir / "artefacts"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model_artefacts_dir.mkdir(parents=True, exist_ok=True)
+
+        os.environ["MODEL_DIR"] = str(model_dir)
+        os.environ["MODEL_ARTEFACTS_DIR"] = str(model_artefacts_dir)
+        # Ограничиваем Optuna для ускорения
+        os.environ["OPTUNA_N_TRIALS"] = "5"
+        os.environ["OPTUNA_TIMEOUT_SECONDS"] = "60"
+
+        from scripts.train import main
+
+        # Запускаем обучение (должен завершиться без исключений)
+        try:
+            main()
+        except SystemExit as e:
+            # main() вызывает sys.exit(0) при успехе
+            assert e.code == 0, f"Обучение завершилось с ошибкой: {e.code}"
+
+        # Проверяем создание основных артефактов
+        model_path = model_dir / "best_model.joblib"
+        assert model_path.exists(), "best_model.joblib не создан"
+        assert model_path.stat().st_size > 0, "best_model.joblib пустой"
+
+        # Проверяем метрики
+        meta_path = model_artefacts_dir / "best_model_meta.json"
+        assert meta_path.exists(), "best_model_meta.json не создан"
+
     def test_train_creates_model_artifacts(self, tmp_path, sample_parquet_files):
-        """Проверка создания артефактов после обучения."""
+        """Проверка создания артефактов после обучения (legacy тест)."""
         import os
 
         os.environ["MODEL_DIR"] = str(tmp_path / "models")

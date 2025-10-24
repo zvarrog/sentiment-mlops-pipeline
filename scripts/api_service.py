@@ -61,12 +61,33 @@ REQUEST_DURATION = Histogram(
     "api_request_duration_seconds",
     "API request duration",
     ["method", "endpoint"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+)
+
+REQUEST_SIZE = Histogram(
+    "api_request_size_bytes",
+    "Size of API request bodies",
+    ["method", "endpoint"],
+    buckets=(100, 500, 1000, 5000, 10000, 50000, 100000),
+)
+
+RESPONSE_SIZE = Histogram(
+    "api_response_size_bytes",
+    "Size of API response bodies",
+    ["method", "endpoint"],
+    buckets=(100, 500, 1000, 5000, 10000, 50000, 100000),
 )
 
 PREDICTION_COUNT = Counter(
     "predictions_total",
     "Total predictions made",
     ["model_name"],
+)
+
+ERROR_COUNT = Counter(
+    "api_errors_total",
+    "Total API errors",
+    ["method", "endpoint", "error_type"],
 )
 
 
@@ -110,111 +131,378 @@ class MetadataResponse(BaseModel):
     health: dict[str, Any]
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Загрузка артефактов при старте, мягкое завершение при shutdown."""
-    # Startup
-    _load_artifacts()
-    log.info("API запущен и готов принимать запросы")
+def create_app(defer_artifacts: bool = False) -> FastAPI:
+    """Фабрика приложения FastAPI.
 
-    yield
+    Args:
+        defer_artifacts: Если True, пропускает загрузку артефактов на старте (удобно для тестов).
+    """
 
-    # Shutdown
-    log.info("Завершаю обработку текущих запросов...")
-    await asyncio.sleep(2)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Старт
+        if not defer_artifacts:
+            _load_artifacts(app)
+        log.info("API запущен и готов принимать запросы")
 
-    # Очищаем ресурсы
-    for attr in ("MODEL", "META", "NUMERIC_DEFAULTS", "FEATURE_CONTRACT"):
-        if hasattr(app.state, attr):
-            delattr(app.state, attr)
+        yield
 
-    log.info("API корректно остановлен")
+        # Завершение
+        log.info("Завершаю обработку текущих запросов...")
+        await asyncio.sleep(0.1)
 
+        for attr in ("MODEL", "META", "NUMERIC_DEFAULTS", "FEATURE_CONTRACT"):
+            if hasattr(app.state, attr):
+                delattr(app.state, attr)
 
-app = FastAPI(title="Kindle Reviews API", version="1.0.0", lifespan=lifespan)
+        log.info("API корректно остановлен")
 
-# Rate limiting
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    application = FastAPI(
+        title="Kindle Reviews API", version="1.0.0", lifespan=lifespan
+    )
 
+    # Rate limiting
+    limiter = Limiter(key_func=get_remote_address)
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-@app.middleware("http")
-async def metrics_middleware(request: Request, call_next):
-    """Middleware для сбора метрик Prometheus."""
-    start = time.perf_counter()
-    response = await call_next(request)
-    duration = time.perf_counter() - start
+    # Регистрация middleware и маршрутов
+    _register_middlewares(application)
+    _register_routes(application, limiter)
 
-    REQUEST_COUNT.labels(
-        method=request.method,
-        endpoint=request.url.path,
-        status=response.status_code,
-    ).inc()
-
-    REQUEST_DURATION.labels(
-        method=request.method,
-        endpoint=request.url.path,
-    ).observe(duration)
-
-    return response
+    return application
 
 
-@app.middleware("http")
-async def request_id_middleware(request: Request, call_next):
-    """Middleware: добавляет X-Request-ID в заголовок и устанавливает trace_id."""
-    req_id = request.headers.get("X-Request-ID")
-    if not req_id:
-        # Простой вариант без зависимостей: используем id объекта и время
-        req_id = f"req-{id(request)}"
-    set_trace_id(req_id)
-    log.info("Запрос: %s %s, X-Request-ID=%s", request.method, request.url.path, req_id)
-    try:
+def _register_middlewares(application: FastAPI) -> None:
+    """Регистрирует middleware для приложения."""
+
+    @application.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        """Сбор метрик Prometheus по каждому запросу."""
+        start = time.perf_counter()
+
+        request_size = 0
+        if request.method in ("POST", "PUT", "PATCH"):
+            try:
+                body = await request.body()
+                request_size = len(body)
+                REQUEST_SIZE.labels(
+                    method=request.method,
+                    endpoint=request.url.path,
+                ).observe(request_size)
+            except Exception:
+                pass
+
         response = await call_next(request)
-    finally:
-        # В логе после обработки
+        duration = time.perf_counter() - start
+
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=request.url.path,
+            status=response.status_code,
+        ).inc()
+
+        REQUEST_DURATION.labels(
+            method=request.method,
+            endpoint=request.url.path,
+        ).observe(duration)
+
+        try:
+            response_size = int(response.headers.get("content-length", 0))
+            if response_size > 0:
+                RESPONSE_SIZE.labels(
+                    method=request.method,
+                    endpoint=request.url.path,
+                ).observe(response_size)
+        except (ValueError, TypeError):
+            pass
+
+        return response
+
+    @application.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        """Устанавливает X-Request-ID и trace_id для запроса."""
+        req_id = request.headers.get("X-Request-ID") or f"req-{id(request)}"
+        set_trace_id(req_id)
         log.info(
-            "Ответ: %s %s -> %s, X-Request-ID=%s",
-            request.method,
-            request.url.path,
-            getattr(request.state, "status_code", "?"),
-            get_trace_id(),
+            "Запрос: %s %s, X-Request-ID=%s", request.method, request.url.path, req_id
         )
-        clear_trace_id()
-    # Проставляем заголовок в ответ
-    response.headers["X-Request-ID"] = req_id
-    return response
+        try:
+            response = await call_next(request)
+        finally:
+            log.info(
+                "Ответ: %s %s -> %s, X-Request-ID=%s",
+                request.method,
+                request.url.path,
+                getattr(request.state, "status_code", "?"),
+                get_trace_id(),
+            )
+            clear_trace_id()
+        response.headers["X-Request-ID"] = req_id
+        return response
 
 
-def _load_artifacts():
+def _register_routes(application: FastAPI, limiter: Limiter) -> None:
+    """Регистрирует маршруты API."""
+
+    @application.get("/health")
+    def health():
+        """Проверка состояния API и загруженной модели."""
+        return {
+            "status": "ok",
+            "model_exists": BEST_MODEL_PATH.exists(),
+            "best_model": getattr(application.state, "META", {}).get("best_model"),
+        }
+
+    @application.get("/metrics")
+    def metrics():
+        """Prometheus metrics endpoint."""
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    @application.get("/metadata", response_model=MetadataResponse)
+    def get_metadata():
+        """Возвращает метаданные модели и информацию о признаках."""
+        meta = getattr(application.state, "META", {})
+        feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
+
+        model_info = {
+            "best_model": meta.get("best_model", "unknown"),
+            "best_params": meta.get("best_params", {}),
+            "test_metrics": meta.get("test_metrics", {}),
+            "training_duration_sec": meta.get("duration_sec", None),
+            "dataset_sizes": meta.get("sizes", {}),
+        }
+
+        feature_info = feature_contract.get_feature_info() if feature_contract else {}
+
+        health_info = {
+            "model_loaded": getattr(application.state, "MODEL", None) is not None,
+            "baseline_stats_loaded": bool(
+                getattr(application.state, "NUMERIC_DEFAULTS", {})
+            ),
+            "feature_contract_loaded": feature_contract is not None,
+        }
+
+        return MetadataResponse(
+            model_info=model_info, feature_contract=feature_info, health=health_info
+        )
+
+    @application.post("/predict", response_model=PredictResponse)
+    @limiter.limit("100/minute")
+    def predict(request: Request, req: PredictRequest):
+        """Предсказание для списка текстов с опциональными числовыми признаками."""
+        try:
+            model = getattr(application.state, "MODEL", None)
+            if model is None:
+                ERROR_COUNT.labels(
+                    method="POST", endpoint="/predict", error_type="model_not_loaded"
+                ).inc()
+                raise HTTPException(status_code=500, detail="Модель не загружена")
+            if not req.texts:
+                ERROR_COUNT.labels(
+                    method="POST", endpoint="/predict", error_type="empty_input"
+                ).inc()
+                raise HTTPException(status_code=400, detail="Список texts пуст")
+
+            meta = getattr(application.state, "META", {})
+            model_name = meta.get("best_model", "unknown")
+            PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.texts))
+
+            name = model.__class__.__name__.lower()
+            if "distil" in name:
+                preds = model.predict(pd.Series(req.texts))
+                probs = None
+                if hasattr(model, "predict_proba"):
+                    try:
+                        probs = model.predict_proba(pd.Series(req.texts)).tolist()
+                    except (AttributeError, ValueError, TypeError):
+                        probs = None
+                return PredictResponse(
+                    labels=[int(x) for x in preds],
+                    probs=probs,
+                    warnings=None,
+                )
+
+            df, ignored = _build_dataframe(application, req.texts, req.numeric_features)
+            preds = model.predict(df)
+            probs = None
+            if hasattr(model, "predict_proba"):
+                try:
+                    probs = model.predict_proba(df).tolist()
+                except (AttributeError, ValueError, TypeError):
+                    probs = None
+
+            warnings = {"ignored_features": ignored} if ignored else None
+            return PredictResponse(
+                labels=[int(x) for x in preds],
+                probs=probs,
+                warnings=warnings,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/predict", error_type="internal_error"
+            ).inc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @application.post("/batch_predict", response_model=BatchPredictResponse)
+    @limiter.limit("50/minute")
+    def batch_predict(request: Request, req: BatchPredictRequest):
+        """Пакетное предсказание для списка объектов с полными данными."""
+        try:
+            model = getattr(application.state, "MODEL", None)
+            if model is None:
+                ERROR_COUNT.labels(
+                    method="POST",
+                    endpoint="/batch_predict",
+                    error_type="model_not_loaded",
+                ).inc()
+                raise HTTPException(status_code=500, detail="Модель не загружена")
+            if not req.data:
+                ERROR_COUNT.labels(
+                    method="POST", endpoint="/batch_predict", error_type="empty_input"
+                ).inc()
+                raise HTTPException(status_code=400, detail="Список data пуст")
+
+            meta = getattr(application.state, "META", {})
+            model_name = meta.get("best_model", "unknown")
+            PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.data))
+
+            texts = []
+            numeric_features = {}
+            all_ignored = {}
+
+            for item in req.data:
+                texts.append(item.get("reviewText", ""))
+                for key, value in item.items():
+                    if key != "reviewText" and isinstance(value, (int, float)):
+                        numeric_features.setdefault(key, []).append(float(value))
+
+            for key, values in numeric_features.items():
+                while len(values) < len(texts):
+                    values.append(0.0)
+
+            name = model.__class__.__name__.lower()
+            if "distil" in name:
+                preds = model.predict(pd.Series(texts))
+                probs = None
+                if hasattr(model, "predict_proba"):
+                    try:
+                        probs_array = model.predict_proba(pd.Series(texts))
+                        probs = [
+                            probs_array[i].tolist() for i in range(len(probs_array))
+                        ]
+                    except (AttributeError, ValueError, TypeError):
+                        probs = None
+            else:
+                df, ignored = _build_dataframe(application, texts, numeric_features)
+                if ignored:
+                    all_ignored["global"] = ignored
+                preds = model.predict(df)
+                probs = None
+                if hasattr(model, "predict_proba"):
+                    try:
+                        probs_array = model.predict_proba(df)
+                        probs = [
+                            probs_array[i].tolist() for i in range(len(probs_array))
+                        ]
+                    except (AttributeError, ValueError, TypeError):
+                        probs = None
+
+            predictions = []
+            for i in range(len(texts)):
+                pred_item = {
+                    "index": i,
+                    "prediction": int(preds[i]),
+                }
+                if probs:
+                    pred_item["probabilities"] = probs[i]
+                predictions.append(pred_item)
+
+            return BatchPredictResponse(
+                predictions=predictions, warnings=all_ignored if all_ignored else None
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/batch_predict", error_type="internal_error"
+            ).inc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @application.get("/health")
+    def health_check():
+        """Health check эндпоинт для мониторинга."""
+        model_loaded = (
+            hasattr(application.state, "MODEL") and application.state.MODEL is not None
+        )
+        artifacts_loaded = (
+            hasattr(application.state, "META")
+            and hasattr(application.state, "FEATURE_CONTRACT")
+            and application.state.META is not None
+        )
+
+        status = "healthy" if (model_loaded and artifacts_loaded) else "unhealthy"
+        return {
+            "status": status,
+            "model_loaded": model_loaded,
+            "artifacts_loaded": artifacts_loaded,
+            "model_type": application.state.META.get("best_model", "unknown")
+            if artifacts_loaded
+            else None,
+        }
+
+    @application.get("/")
+    def root():
+        """Корневой эндпоинт с информацией об API."""
+        return {
+            "service": "Kindle Reviews Sentiment Analysis API",
+            "version": "1.0.0",
+            "endpoints": {
+                "predict": "/predict (POST)",
+                "batch_predict": "/batch_predict (POST)",
+                "health": "/health (GET)",
+                "metrics": "/metrics (GET)",
+            },
+            "docs": "/docs",
+        }
+
+
+def _load_artifacts(application: FastAPI) -> None:
     """Загружает модель и артефакты (метаданные, baseline статистики, контракт признаков)."""
     log.info("Загрузка артефактов модели...")
     if not BEST_MODEL_PATH.exists():
         log.error("Модель не найдена: %s", BEST_MODEL_PATH)
         raise FileNotFoundError(f"Модель не найдена: {BEST_MODEL_PATH}")
 
-    app.state.MODEL = joblib.load(BEST_MODEL_PATH)
+    application.state.MODEL = joblib.load(BEST_MODEL_PATH)
     log.info("Модель загружена: %s", BEST_MODEL_PATH)
 
-    app.state.META = json.loads(META_PATH.read_text(encoding="utf-8"))
-    app.state.NUMERIC_DEFAULTS = json.loads(
+    application.state.META = json.loads(META_PATH.read_text(encoding="utf-8"))
+    application.state.NUMERIC_DEFAULTS = json.loads(
         BASELINE_NUMERIC_PATH.read_text(encoding="utf-8")
     )
-    app.state.FEATURE_CONTRACT = FeatureContract.from_model_artifacts(
+    application.state.FEATURE_CONTRACT = FeatureContract.from_model_artifacts(
         MODEL_ARTEFACTS_DIR
     )
     log.info("Артефакты модели успешно загружены")
 
 
+# (Дубликаты middleware и загрузчика артефактов удалены — логика вынесена в create_app)
+
+
 def _build_dataframe(
-    texts: list[str], numeric_features: dict[str, list[float]] | None = None
+    application: FastAPI,
+    texts: list[str],
+    numeric_features: dict[str, list[float]] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Собирает DataFrame для предсказания и возвращает список проигнорованных признаков."""
     df = pd.DataFrame({"reviewText": texts})
     ignored_features = []
 
     # Получаем список ожидаемых числовых колонок
-    feature_contract = getattr(app.state, "FEATURE_CONTRACT", None)
+    feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
     if not feature_contract:
         raise RuntimeError(
             "Feature contract (артефакты) не загружены — невозможно определить список признаков. Проверьте наличие артефактов модели."
@@ -271,7 +559,7 @@ def _build_dataframe(
             df[col] = extractor(s)
 
     # Остальные требуемые числовые колонки заполним базовыми значениями или нулями
-    baseline_stats = getattr(app.state, "NUMERIC_DEFAULTS", {})
+    baseline_stats = getattr(application.state, "NUMERIC_DEFAULTS", {})
     for col in numeric_cols:
         if col not in df.columns:
             default_val = baseline_stats.get(col, {}).get("mean", 0.0)
@@ -280,206 +568,11 @@ def _build_dataframe(
     return df, ignored_features
 
 
-@app.get("/health")
-def health():
-    """Проверка состояния API и загруженной модели."""
-    return {
-        "status": "ok",
-        "model_exists": BEST_MODEL_PATH.exists(),
-        "best_model": getattr(app.state, "META", {}).get("best_model"),
-    }
+# Конец регистрации маршрутов
 
 
-@app.get("/metrics")
-def metrics():
-    """Prometheus metrics endpoint."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-@app.get("/metadata", response_model=MetadataResponse)
-def get_metadata():
-    """Возвращает метаданные модели и информацию о признаках."""
-    meta = getattr(app.state, "META", {})
-    feature_contract = getattr(app.state, "FEATURE_CONTRACT", None)
-
-    model_info = {
-        "best_model": meta.get("best_model", "unknown"),
-        "best_params": meta.get("best_params", {}),
-        "test_metrics": meta.get("test_metrics", {}),
-        "training_duration_sec": meta.get("duration_sec", None),
-        "dataset_sizes": meta.get("sizes", {}),
-    }
-
-    feature_info = feature_contract.get_feature_info() if feature_contract else {}
-
-    health_info = {
-        "model_loaded": getattr(app.state, "MODEL", None) is not None,
-        "baseline_stats_loaded": bool(getattr(app.state, "NUMERIC_DEFAULTS", {})),
-        "feature_contract_loaded": feature_contract is not None,
-    }
-
-    return MetadataResponse(
-        model_info=model_info, feature_contract=feature_info, health=health_info
-    )
-
-
-@app.post("/predict", response_model=PredictResponse)
-@limiter.limit("100/minute")
-def predict(request: Request, req: PredictRequest):
-    """Предсказание для списка текстов с опциональными числовыми признаками."""
-    model = getattr(app.state, "MODEL", None)
-    if model is None:
-        raise HTTPException(status_code=500, detail="Модель не загружена")
-    if not req.texts:
-        raise HTTPException(status_code=400, detail="Список texts пуст")
-
-    # Логируем метрику predictions
-    meta = getattr(app.state, "META", {})
-    model_name = meta.get("best_model", "unknown")
-    PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.texts))
-
-    name = model.__class__.__name__.lower()
-    if "distil" in name:
-        preds = model.predict(pd.Series(req.texts))
-        probs = None
-        if hasattr(model, "predict_proba"):
-            try:
-                probs = model.predict_proba(pd.Series(req.texts)).tolist()
-            except (AttributeError, ValueError, TypeError):
-                probs = None
-        return PredictResponse(
-            labels=[int(x) for x in preds],
-            probs=probs,
-            warnings=None,
-        )
-
-    df, ignored = _build_dataframe(req.texts, req.numeric_features)
-    preds = model.predict(df)
-    probs = None
-    if hasattr(model, "predict_proba"):
-        try:
-            probs = model.predict_proba(df).tolist()
-        except (AttributeError, ValueError, TypeError):
-            probs = None
-
-    warnings = {"ignored_features": ignored} if ignored else None
-    return PredictResponse(
-        labels=[int(x) for x in preds],
-        probs=probs,
-        warnings=warnings,
-    )
-
-
-@app.post("/batch_predict", response_model=BatchPredictResponse)
-@limiter.limit("50/minute")
-def batch_predict(request: Request, req: BatchPredictRequest):
-    """Пакетное предсказание для списка объектов с полными данными."""
-    model = getattr(app.state, "MODEL", None)
-    if model is None:
-        raise HTTPException(status_code=500, detail="Модель не загружена")
-    if not req.data:
-        raise HTTPException(status_code=400, detail="Список data пуст")
-
-    # Логируем метрику predictions
-    meta = getattr(app.state, "META", {})
-    model_name = meta.get("best_model", "unknown")
-    PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.data))
-
-    # Строим DataFrame из всех объектов
-    texts = []
-    numeric_features = {}
-    all_ignored = {}
-
-    for item in req.data:
-        texts.append(item.get("reviewText", ""))
-        # Собираем числовые признаки
-        for key, value in item.items():
-            if key != "reviewText" and isinstance(value, (int, float)):
-                if key not in numeric_features:
-                    numeric_features[key] = []
-                numeric_features[key].append(float(value))
-
-    # Выравниваем длины списков числовых признаков
-    for key, values in numeric_features.items():
-        while len(values) < len(texts):
-            values.append(0.0)
-
-    # Предсказание
-    name = model.__class__.__name__.lower()
-    if "distil" in name:
-        preds = model.predict(pd.Series(texts))
-        probs = None
-        if hasattr(model, "predict_proba"):
-            try:
-                probs_array = model.predict_proba(pd.Series(texts))
-                probs = [probs_array[i].tolist() for i in range(len(probs_array))]
-            except (AttributeError, ValueError, TypeError):
-                probs = None
-    else:
-        df, ignored = _build_dataframe(texts, numeric_features)
-        if ignored:
-            all_ignored["global"] = ignored
-        preds = model.predict(df)
-        probs = None
-        if hasattr(model, "predict_proba"):
-            try:
-                probs_array = model.predict_proba(df)
-                probs = [probs_array[i].tolist() for i in range(len(probs_array))]
-            except (AttributeError, ValueError, TypeError):
-                probs = None
-
-    # Формируем результат
-    predictions = []
-    for i in range(len(texts)):
-        pred_item = {
-            "index": i,
-            "prediction": int(preds[i]),
-        }
-        if probs:
-            pred_item["probabilities"] = probs[i]
-        predictions.append(pred_item)
-
-    return BatchPredictResponse(
-        predictions=predictions, warnings=all_ignored if all_ignored else None
-    )
-
-
-@app.get("/health")
-def health_check():
-    """Health check эндпоинт для мониторинга."""
-    model_loaded = hasattr(app.state, "MODEL") and app.state.MODEL is not None
-    artifacts_loaded = (
-        hasattr(app.state, "META")
-        and hasattr(app.state, "FEATURE_CONTRACT")
-        and app.state.META is not None
-    )
-
-    status = "healthy" if (model_loaded and artifacts_loaded) else "unhealthy"
-    return {
-        "status": status,
-        "model_loaded": model_loaded,
-        "artifacts_loaded": artifacts_loaded,
-        "model_type": app.state.META.get("best_model", "unknown")
-        if artifacts_loaded
-        else None,
-    }
-
-
-@app.get("/")
-def root():
-    """Корневой эндпоинт с информацией об API."""
-    return {
-        "service": "Kindle Reviews Sentiment Analysis API",
-        "version": "1.0.0",
-        "endpoints": {
-            "predict": "/predict (POST)",
-            "batch_predict": "/batch_predict (POST)",
-            "health": "/health (GET)",
-            "metrics": "/metrics (GET)",
-        },
-        "docs": "/docs",
-    }
-
+# Экземпляр по умолчанию для совместимости со старыми импортами
+app = create_app()
 
 # Локальный запуск: uvicorn scripts.api_service:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
