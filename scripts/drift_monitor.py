@@ -77,9 +77,8 @@ def send_slack_alert(message: str, webhook_url: str | None = None):
         return
 
     payload = {
-        "text": f"🚨 *Drift Alert*\n{message}",
+        "text": f"[DRIFT ALERT]\n{message}",
         "username": "Drift Monitor",
-        "icon_emoji": ":chart_with_downwards_trend:",
     }
 
     try:
