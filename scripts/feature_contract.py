@@ -38,11 +38,11 @@ class FeatureContract:
                     baseline_stats = json.load(f)
             except Exception:
                 baseline_stats = None
-            # Если baseline есть, ориентируемся на его ключи (реально использованные во время обучения)
+            # Ориентируемся на ключи baseline (реально использованные признаки)
             if isinstance(baseline_stats, dict) and baseline_stats:
                 expected_numeric = [str(k) for k in baseline_stats.keys()]
 
-        # Пытаемся вычитать фактически использованные числовые признаки из схемы
+        # Фактически использованные числовые признаки из схемы
         if schema_path.exists():
             try:
                 with open(schema_path, encoding="utf-8") as f:
@@ -55,7 +55,7 @@ class FeatureContract:
             except Exception:
                 pass
 
-        # Проверяем, что удалось получить список признаков из артефактов
+        # Валидация: список признаков обязателен
         if not expected_numeric:
             raise RuntimeError(
                 f"Не удалось определить список числовых признаков из артефактов в {model_artefact_dir}. "
@@ -88,7 +88,7 @@ class FeatureContract:
             if col not in data:
                 missing_numeric.append(col)
             elif self.baseline_stats and col in self.baseline_stats:
-                # Проверяем на выбросы (простая проверка на 3 сигмы)
+                # Выбросы (3 сигмы)
                 baseline = self.baseline_stats[col]
                 mean = baseline.get("mean", 0.0)
                 std = baseline.get("std", 1.0)

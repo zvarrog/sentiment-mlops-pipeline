@@ -218,42 +218,43 @@ else:
     )
 
     # Sentiment анализ с TextBlob для более точных результатов
-    from pyspark.sql.types import FloatType
     from pyspark.sql.functions import udf
-    
+    from pyspark.sql.types import FloatType
+
     def calculate_sentiment_textblob(text):
         """Вычисляет sentiment score с помощью TextBlob.
-        
+
         Возвращает polarity от -1 (негативный) до +1 (позитивный).
         Использует встроенные модели и словари TextBlob.
         """
         if not text or len(text.strip()) < 3:
             return 0.0
-            
+
         from textblob import TextBlob
+
         blob = TextBlob(text)
         polarity = blob.sentiment.polarity
-        
+
         # Ограничиваем диапазон и округляем для стабильности
         return float(max(-1.0, min(1.0, round(polarity, 4))))
 
     # Регистрируем UDF для sentiment анализа
     sentiment_udf = udf(calculate_sentiment_textblob, FloatType())
-    
+
     clean = clean.withColumn("sentiment", sentiment_udf(col("reviewText")))
-    
+
     # Дополнительные sentiment метрики для анализа
     clean = clean.withColumn(
         "sentiment_category",
         when(col("sentiment") > 0.1, "positive")
-        .when(col("sentiment") < -0.1, "negative") 
-        .otherwise("neutral")
+        .when(col("sentiment") < -0.1, "negative")
+        .otherwise("neutral"),
     )
     clean = clean.withColumn(
         "sentiment_strength",
         when(col("sentiment").abs() > 0.5, "strong")
         .when(col("sentiment").abs() > 0.2, "moderate")
-        .otherwise("weak")
+        .otherwise("weak"),
     )
 
     # Делим на выборки
@@ -358,7 +359,7 @@ else:
             if all_valid:
                 log.info("Валидация сохранённых данных успешно завершена")
             else:
-                log.warning("Внимание: обнаружены проблемы в сохранённых данных")
+                log.warning("Обнаружены проблемы в сохранённых данных")
 
         except Exception as e:
             log.warning("Ошибка валидации сохранённых данных: %s", e)

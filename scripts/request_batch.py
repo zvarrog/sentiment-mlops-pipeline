@@ -20,5 +20,5 @@ for i, (text, stars) in enumerate(zip(df["reviewText"], df.get("overall"))):
     preview = text[:200] + "..." if isinstance(text, str) and len(text) > 200 else text
     pred_item = preds[i]
     label = pred_item.get("prediction")
-    print(f"📖 {preview}")
-    print(f"⭐ {stars} -> predict: {label}\n")
+    print(f"TEXT: {preview}")
+    print(f"RATING {stars} -> predict: {label}\n")

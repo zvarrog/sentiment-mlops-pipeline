@@ -78,42 +78,16 @@ OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
 def build_pipeline(
     trial: optuna.Trial, model_name, fixed_solver: str | None = None
 ) -> Pipeline:
-    """
-    Строит sklearn Pipeline для trial.
-
-    Состав:
-        - ColumnTransformer: text -> TF-IDF(+опц. SVD), numeric -> Impute+Scale
-        - (опц.) DenseTransformer для hist_gb
-        - Финальная модель
-
-    ---
-    Гиперпараметры DistilBERT и их влияние:
-
-    - db_epochs: увеличение числа эпох повышает качество, но сильно замедляет обучение и увеличивает расход GPU-памяти.
-        Рекомендация: для быстрой проверки — 1 эпоха, для максимального качества — 2 и более.
-    - db_lr: уменьшение learning rate (lr) обычно повышает качество, но замедляет сходимость; слишком маленький lr может привести к очень долгому обучению.
-        Рекомендация: 1e-5 — медленно, но качественно; 5e-5 — быстрее, но возможна потеря качества.
-    - db_max_len: увеличение max_len позволяет учитывать больше контекста, повышает качество, но увеличивает расход памяти и время обработки.
-        Рекомендация: 96 — быстро, 192 — качественно, но требует больше ресурсов.
-    - db_use_bigrams: включение биграмм может повысить качество, но замедляет обучение.
-        Рекомендация: включать только если есть запас по времени/ресурсам.
-    ---
-    """
-    # Приводим имя модели к enum (обратная совместимость со строками)
     model_kind: ModelKind
     if isinstance(model_name, ModelKind):
         model_kind = model_name
     else:
         model_kind = ModelKind(str(model_name))
-    # DistilBERT отдельный
+
     if model_kind is ModelKind.distilbert:
-        # db_epochs: увеличение числа эпох повышает качество, но сильно замедляет обучение и увеличивает расход GPU-памяти.
         epochs = trial.suggest_int("db_epochs", 1, 2)
-        # db_lr: слишком маленький lr — долгое обучение, слишком большой — риск плохой сходимости.
         lr = trial.suggest_float("db_lr", 1e-5, 5e-5, log=True)
-        # db_max_len: увеличение max_len повышает качество, но увеличивает расход памяти и время обработки.
         max_len = trial.suggest_int("db_max_len", 96, 192, step=32)
-        # db_use_bigrams: включение биграмм может повысить качество, но замедляет обучение.
         use_bi = trial.suggest_categorical("db_use_bigrams", [False, True])
         clf = DistilBertClassifier(
             epochs=epochs,
@@ -124,17 +98,13 @@ def build_pipeline(
         )
         return Pipeline([("distilbert", clf)])
 
-    # Общая лёгкая предобработка TF-IDF: удаление стоп-слов, опциональный стемминг
-    # Вынесено в отдельный модуль, чтобы модель ссылалась на лёгкий код без mlflow
     from scripts.train_modules.text_analyzers import make_tfidf_analyzer
 
     use_stemming = trial.suggest_categorical("use_stemming", [False, True])
 
-    # Адаптивный TF-IDF max_features на основе размера train датасета
     n_train_samples = int(trial.user_attrs.get("n_train_samples", 20000))
     tfidf_min, tfidf_max, tfidf_step = get_tfidf_max_features_range(n_train_samples)
 
-    # Общие параметры TF-IDF для всех моделей (кроме DistilBERT)
     text_max_features = trial.suggest_int(
         "tfidf_max_features",
         tfidf_min,
@@ -152,14 +122,11 @@ def build_pipeline(
     )
 
     if model_kind is ModelKind.logreg:
-        # LogReg не использует SVD для простоты
         use_svd = False
         text_steps = [("tfidf", tfidf)]
     else:
-        # Оценка памяти ~ nnz * 4 байта (float32); для двуграмм плотность выше, возьмём коэффициент 1.5
-        # nnz ~ n_samples * avg_terms_per_doc * 1.5
         n_samples_est = int(trial.user_attrs.get("n_train_samples", 20000))
-        avg_terms = 120  # консервативная средняя оценка после очистки
+        avg_terms = 120
         bigram_coef = 1.5
         estimated_nnz = n_samples_est * avg_terms * bigram_coef
         estimated_size_mb = (estimated_nnz * 4) / (1024 * 1024)
@@ -203,7 +170,6 @@ def build_pipeline(
         ]
     )
 
-    # Веса для балансировки важности text vs numeric признаков
     text_weight = trial.suggest_float("text_weight", 0.1, 1.0)
     numeric_weight = trial.suggest_float("numeric_weight", 1.0, 10.0)
 
@@ -218,25 +184,18 @@ def build_pipeline(
     steps = [("pre", preprocessor)]
 
     if model_kind is ModelKind.logreg:
-        # ВНИМАНИЕ: solver 'saga' очень медленно сходится на больших данных.
-        # Если хотите протестировать все варианты — раскомментируйте 'saga' выше, но будьте готовы к долгому ожиданию.
         C = trial.suggest_float("logreg_C", 1e-4, 1e2, log=True)
-        # Если fixed_solver задан, фиксируем выбор в trial через single-choice
         if fixed_solver is not None:
             solver = trial.suggest_categorical("logreg_solver", [fixed_solver])
         else:
             solver = trial.suggest_categorical(
                 "logreg_solver", ["lbfgs", "liblinear", "saga"]
             )
-        # Упрощённый подход: сначала выбираем регуляризацию, затем фильтруем по solver
         penalty_options = ["l1", "l2"]
         if solver == "lbfgs":
-            # LBFGS не поддерживает L1 (недифференцируемость)
             penalty_options = ["l2"]
 
         penalty = trial.suggest_categorical("logreg_penalty", penalty_options)
-        # lbfgs не поддерживает sparse-входы, а наш ColumnTransformer может возвращать sparse,
-        # поэтому перед моделью принудительно конвертируем в dense
         if solver == "lbfgs":
             steps.append(("to_dense", DenseTransformer()))
         clf = LogisticRegression(
@@ -247,8 +206,6 @@ def build_pipeline(
             penalty=penalty,
         )
     elif model_kind is ModelKind.rf:
-        # Если хотите более точную модель — увеличьте n_estimators и max_depth,
-        # но это значительно увеличит время обучения и расход памяти.
         n_estimators = trial.suggest_int("rf_n_estimators", 100, 300, step=50)
         max_depth = trial.suggest_int("rf_max_depth", 6, 18, step=2)
         min_samples_split = trial.suggest_int("rf_min_samples_split", 2, 10)
@@ -263,17 +220,12 @@ def build_pipeline(
             random_state=SEED,
         )
     elif model_kind is ModelKind.mlp:
-        # Увеличение hidden_dim и epochs повышает качество, но замедляет обучение.
-        # Если хотите максимальное качество — расширьте диапазоны в settings.py.
         hidden = trial.suggest_int("mlp_hidden", 64, 256, step=64)
         epochs = trial.suggest_int("mlp_epochs", 3, 8)
         lr = trial.suggest_float("mlp_lr", 1e-4, 5e-3, log=True)
-        # обязателен dense
         steps.append(("to_dense", DenseTransformer()))
         clf = SimpleMLP(hidden_dim=hidden, epochs=epochs, lr=lr, device=TRAIN_DEVICE)
-    else:  # hist_gb
-        # Увеличение max_iter и уменьшение min_samples_leaf повышает качество, но замедляет обучение.
-        # Если хотите максимальное качество — расширьте диапазоны в settings.py.
+    else:
         lr = trial.suggest_float("hist_gb_lr", 0.01, 0.3, log=True)
         max_iter = trial.suggest_int("hist_gb_max_iter", 60, 160, step=20)
         l2 = trial.suggest_float("hist_gb_l2_regularization", 0.0, 1.0)
@@ -292,7 +244,6 @@ def build_pipeline(
 
 
 def compute_metrics(y_true, y_pred) -> dict[str, float]:
-    """Считает accuracy и F1 (macro/weighted) по вектору предсказаний."""
     return {
         "accuracy": accuracy_score(y_true, y_pred),
         "f1_macro": f1_score(y_true, y_pred, average="macro"),
@@ -301,7 +252,6 @@ def compute_metrics(y_true, y_pred) -> dict[str, float]:
 
 
 def log_confusion_matrix(y_true, y_pred, path: Path):
-    """Рисует и сохраняет матрицу ошибок в PNG по указанному пути."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -330,28 +280,19 @@ def objective(
     y_val,
     fixed_solver: str | None = None,
 ):
-    """Objective для Optuna: возвращает macro-F1 (CV или hold-out на val) для заданной модели."""
     model_kind: ModelKind = (
         model_name if isinstance(model_name, ModelKind) else ModelKind(str(model_name))
     )
     trial.set_user_attr(
         "numeric_cols", [c for c in NUMERIC_COLS if c in X_train.columns]
     )
-    # Для эвристики по памяти/включению SVD передаём размер train в user_attrs
     try:
         trial.set_user_attr("n_train_samples", int(len(X_train)))
     except Exception:
         pass
-    # Логируем модель один раз для trial
     mlflow.log_param("model", model_kind.value)
 
-    # Вспомогательная функция: единообразно считает метрику через KFold или hold-out
     def _evaluate_with_cv_or_holdout(is_distilbert: bool) -> float:
-        """Возвращает macro-F1 по CV (если N_FOLDS>1) или по hold-out (val).
-
-        - Для DistilBERT используем сырой текст (Series/ndarray), иначе — DataFrame.
-        - Логирует соответствующие метрики в MLflow (cv_f1_macro или accuracy/f1_*).
-        """
         if N_FOLDS > 1:
             from sklearn.model_selection import StratifiedKFold
 
@@ -389,24 +330,19 @@ def objective(
         mlflow.log_metrics(metrics)
         return metrics["f1_macro"]
 
-    # Если distilbert – обучаем напрямую без ColumnTransformer
     if model_kind is ModelKind.distilbert:
         try:
             return _evaluate_with_cv_or_holdout(is_distilbert=True)
         except ImportError as e:
-            # В DistilBERT возможны отсутствующие зависимости (torch/transformers и т.п.)
             mlflow.log_param("skipped", f"missing_deps: {e}")
             return 0.0
 
-    # Классические модели: общая функция
     return _evaluate_with_cv_or_holdout(is_distilbert=False)
 
 
 def _early_stop_callback(patience: int, min_trials: int):
-    """Коллбек ранней остановки Optuna с учётом паузы (patience) и минимума успешных трейлов."""
-    # не позволяет patience < 1
     if patience is None or patience < 1:
-        log.warning("patience<1 в early stop, принудительно устанавливаю в 1")
+        log.warning("patience<1 в early stop, использую значение 1")
         patience = 1
     best = {"value": -1, "since": 0, "count": 0}
 
@@ -419,7 +355,6 @@ def _early_stop_callback(patience: int, min_trials: int):
             best["since"] = 0
         else:
             best["since"] += 1
-        # Не останавливаемся, пока не наберём минимум успешных трейлов
         if best["count"] < max(1, min_trials):
             return
         if best["since"] >= patience:
@@ -436,10 +371,6 @@ def _early_stop_callback(patience: int, min_trials: int):
 def _extract_feature_importances(
     pipeline: Pipeline, use_svd: bool
 ) -> list[dict[str, float]]:
-    """Возвращает список топ‑важностей фич из финального пайплайна (coef_/feature_importances_).
-
-    Для SVD добавляет топ-термины для каждого компонента.
-    """
     res: list[dict[str, float]] = []
     try:
         if "pre" not in pipeline.named_steps or "model" not in pipeline.named_steps:
@@ -465,12 +396,10 @@ def _extract_feature_importances(
             svd_model = text_pipe.named_steps["svd"]
             n_components = svd_model.n_components
 
-            # Для каждого SVD компонента находим топ-10 слов
             for comp_idx in range(n_components):
                 component = svd_model.components_[comp_idx]
                 top_indices = np.argsort(np.abs(component))[-10:][::-1]
                 top_terms = [vocab_inv.get(i, f"tok_{i}") for i in top_indices]
-                # Формируем читаемое имя: svd_0[book,kindle,read...]
                 feature_name = f"svd_{comp_idx}[{','.join(top_terms[:3])}...]"
                 feature_names.append(feature_name)
 
@@ -487,18 +416,15 @@ def _extract_feature_importances(
             if i < len(feature_names):
                 res.append({"feature": feature_names[i], "importance": float(coefs[i])})
     except (KeyError, AttributeError, ValueError) as e:
-        log.warning("Не удалось извлечь важности: %s", e)
+        log.warning("Не удалось извлечь feature importances: %s", e)
     return res
 
 
 def run():
-    """Основной сценарий обучения: Optuna‑подбор, выбор лучшего, дообучение и логирование артефактов."""
-    # Настраиваем логирование для обучения
     from .logging_config import setup_training_logging
 
     setup_training_logging()
 
-    # Graceful SIGTERM handling
     shutdown_requested = False
 
     def signal_handler(signum, frame):
@@ -510,7 +436,6 @@ def run():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Настройка MLflow трекинга
     mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     mlflow.set_tracking_uri(mlflow_uri)
     mlflow.set_experiment(EXPERIMENT_NAME)
@@ -525,7 +450,6 @@ def run():
 
     log.info("FORCE_TRAIN=%s, best_model exists=%s", FORCE_TRAIN, best_path.exists())
 
-    # Загружаем метрики старой модели для сравнения
     old_model_metric = None
     if best_meta_path.exists():
         try:
@@ -809,7 +733,7 @@ def run():
         cr_path.write_text(cr_txt, encoding="utf-8")
         mlflow.log_artifact(str(cr_path))
 
-        # Важности признаков (для классических моделей)
+        # Feature importances (для классических моделей)
         if best_model is not ModelKind.distilbert:
             try:
                 use_svd_flag = False
@@ -832,7 +756,7 @@ def run():
                         json.dump(fi_list, f, ensure_ascii=False, indent=2)
                     mlflow.log_artifact(str(fi_path))
             except Exception as e:
-                log.warning("Не удалось сохранить важности признаков: %s", e)
+                log.warning("Не удалось сохранить feature importances: %s", e)
 
         # Снимок лучших трейлов Optuna (top-K)
         try:
