@@ -21,7 +21,7 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # === Директории ===
+    # Директории
     raw_data_dir: Path = Field(default=Path("data/raw"))
     processed_data_dir: Path = Field(default=Path("data/processed"))
     model_dir: Path = Field(default=Path("artefacts"))
@@ -38,22 +38,22 @@ class Settings(BaseSettings):
         """Директория для артефактов дрейфа."""
         return self.model_dir / "drift_artefacts"
 
-    # === Датасет ===
+    # Датасет
     kaggle_dataset: str = Field(default="bharadwaj6/kindle-reviews")
     csv_name: str = Field(default="kindle_reviews.csv")
     json_name: str = Field(default="kindle_reviews.json")
 
-    # === Флаги ===
+    # Флаги
     force_download: bool = Field(default=False)
     force_process: bool = Field(default=False)
     force_train: bool = Field(default=False)
 
-    # === Флаги дрейфа и валидации ===
+    # Флаги дрейфа и валидации
     inject_synthetic_drift: bool = Field(default=False)
     run_drift_monitor: bool = Field(default=False)
     run_data_validation: bool = Field(default=True)
 
-    # === Обработка данных ===
+    # Обработка данных
     per_class_limit: int = Field(default=35000)
     hashing_tf_features: int = Field(default=6144)
     shuffle_partitions: int = Field(default=32)
@@ -61,14 +61,14 @@ class Settings(BaseSettings):
     min_tf: int = Field(default=2)
     seed: int = Field(default=42)
 
-    # === Оптимизация памяти ===
+    # Оптимизация памяти
     memory_warning_mb: int = Field(default=3072)
     tfidf_max_features_min: int = Field(default=2000)
     tfidf_max_features_max: int = Field(default=6000)
     tfidf_max_features_step: int = Field(default=500)
     force_svd_threshold_mb: int = Field(default=4000)
 
-    # === Обучение ===
+    # Обучение
     optuna_n_trials: int = Field(default=30)
     optuna_storage: str = Field(default="sqlite:///optuna_study.db")
     study_base_name: str = Field(default="kindle_optuna")
@@ -80,16 +80,16 @@ class Settings(BaseSettings):
     distilbert_timeout_sec: int = Field(default=1800)
     optuna_topk_export: int = Field(default=20)
 
-    # === MLflow ===
+    # MLflow
     mlflow_tracking_uri: str = Field(default="http://mlflow:5000")
     mlflow_experiment_name: str = Field(default="kindle_reviews")
 
-    # === Spark ресурсы ===
+    # Spark ресурсы
     spark_driver_memory: str = Field(default="6g")
     spark_executor_memory: str = Field(default="6g")
     spark_num_cores: int = Field(default=4)
 
-    # === Логирование ===
+    # Логирование
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="text")
     log_include_timestamp: bool = Field(default=True)

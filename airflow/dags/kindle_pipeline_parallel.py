@@ -1,14 +1,4 @@
-"""DAG с параллельным обучением нескольких моделей и выбором лучшей.
-
-Архитектура:
-    download → [validate_schema, validate_quality] → [train_logreg, train_rf, train_gb] → select_best
-
-Особенности:
-    - Параллельная валидация схемы и качества данных
-    - Параллельное обучение трех моделей (LogReg, RF, GradientBoosting)
-    - Автоматический выбор лучшей модели по F1-macro
-    - Логирование в MLflow
-"""
+"""DAG с параллельным обучением моделей и выбором лучшей по F1-macro."""
 
 from datetime import datetime
 
@@ -41,15 +31,7 @@ except ImportError:
         pass
 
 
-_DOC = """
-DAG kindle_reviews_parallel_pipeline.
-
-Параллельная обработка и обучение:
-- Загрузка данных
-- Параллельная валидация (схема + качество)
-- Параллельное обучение 3 моделей (LogReg, RF, GradientBoosting)
-- Выбор лучшей модели по метрике F1-macro на валидации
-"""
+_DOC = "Пайплайн с параллельным обучением моделей и автоматическим выбором лучшей."
 
 default_args = {
     "start_date": datetime(2025, 1, 1),
@@ -57,7 +39,6 @@ default_args = {
 
 
 def _setup_env(**context):
-    """Настройка окружения для всех задач."""
     import os
     from pathlib import Path
 
@@ -73,13 +54,11 @@ def _setup_env(**context):
     os.environ["MODEL_ARTEFACTS_DIR"] = _abs("artefacts/model_artefacts")
     os.environ["DRIFT_ARTEFACTS_DIR"] = _abs("artefacts/drift_artefacts")
 
-    # Настройка MLflow
     os.environ["MLFLOW_TRACKING_URI"] = "file:///opt/airflow/mlruns"
     os.environ["MLFLOW_EXPERIMENT_NAME"] = "kindle_parallel_experiment"
 
 
 def _task_download(**context):
-    """Загрузка данных с Kaggle."""
     _setup_env(**context)
     import os
 
@@ -101,7 +80,6 @@ def _task_download(**context):
 
 
 def _task_validate_schema(**context):
-    """Валидация схемы данных."""
     _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
 
@@ -113,11 +91,9 @@ def _task_validate_schema(**context):
     from scripts.data_validation import KINDLE_REVIEWS_SCHEMA, validate_parquet_file
     from scripts.settings import PROCESSED_DATA_DIR
 
-    # Проверяем train.parquet
     train_file = Path(PROCESSED_DATA_DIR) / "train.parquet"
     if not train_file.exists():
         log.warning("Файл train.parquet не найден — создаем обработанные данные")
-        # Запускаем обработку если файлов еще нет
         from scripts.spark_process import main as process_main
 
         process_main()
@@ -131,7 +107,6 @@ def _task_validate_schema(**context):
 
 
 def _task_validate_quality(**context):
-    """Валидация качества данных."""
     _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
 
@@ -158,11 +133,10 @@ def _task_validate_quality(**context):
 
 
 def _train_model_wrapper(model_kind: str, **context):
-    """Обертка для обучения одной модели с фиксированным типом."""
     _setup_env(**context)
     import os
 
-    os.environ["FORCE_TRAIN"] = "1"  # Всегда переобучаем в параллельном режиме
+    os.environ["FORCE_TRAIN"] = "1"
 
     from scripts.logging_config import setup_auto_logging
     from scripts.models.kinds import ModelKind
@@ -170,7 +144,6 @@ def _train_model_wrapper(model_kind: str, **context):
     log = setup_auto_logging()
     log.info(f"Обучение модели: {model_kind}")
 
-    # Импортируем необходимые модули
     import json
     import time
     from pathlib import Path
@@ -187,10 +160,8 @@ def _train_model_wrapper(model_kind: str, **context):
     from scripts.train import build_pipeline, compute_metrics, objective
     from scripts.train_modules.data_loading import load_splits
 
-    # Загружаем данные
     X_train, X_val, X_test, y_train, y_val, y_test = load_splits()
 
-    # Создаем study для конкретной модели
     model_enum = ModelKind(model_kind)
     study_name = f"parallel_{model_kind}_{int(time.time())}"
 
@@ -209,7 +180,6 @@ def _train_model_wrapper(model_kind: str, **context):
         def opt_obj(trial):
             return objective(trial, model_enum, X_train, y_train, X_val, y_val)
 
-        # Меньше trials для параллельных запусков
         n_trials = min(OPTUNA_N_TRIALS, 10)
         study.optimize(opt_obj, n_trials=n_trials, timeout=300, show_progress_bar=False)
 
@@ -217,9 +187,7 @@ def _train_model_wrapper(model_kind: str, **context):
             raise ValueError(f"Не удалось обучить модель {model_kind}")
 
         best_params = study.best_trial.params
-        best_f1 = study.best_trial.value
 
-        # Обучаем финальную модель
         fixed_trial = optuna.trial.FixedTrial(best_params)
         from scripts.train_modules.feature_space import NUMERIC_COLS
 
@@ -230,23 +198,19 @@ def _train_model_wrapper(model_kind: str, **context):
         pipeline = build_pipeline(fixed_trial, model_enum)
         pipeline.fit(X_train, y_train)
 
-        # Оценка на валидации
         val_preds = pipeline.predict(X_val)
         val_metrics = compute_metrics(y_val, val_preds)
 
-        # Оценка на тесте
         test_preds = pipeline.predict(X_test)
         test_metrics = compute_metrics(y_test, test_preds)
 
         mlflow.log_metrics({f"val_{k}": v for k, v in val_metrics.items()})
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
 
-        # Сохраняем модель
         model_path = Path(MODEL_ARTEFACTS_DIR) / f"model_{model_kind}.joblib"
         model_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipeline, model_path)
 
-        # Сохраняем метаданные
         meta = {
             "model": model_kind,
             "best_params": best_params,
@@ -264,7 +228,6 @@ def _train_model_wrapper(model_kind: str, **context):
             f"Модель {model_kind} обучена: val_f1={val_metrics['f1_macro']:.4f}, test_f1={test_metrics['f1_macro']:.4f}"
         )
 
-        # Возвращаем метрику для XCom
         return {
             "model": model_kind,
             "val_f1_macro": val_metrics["f1_macro"],
@@ -274,22 +237,18 @@ def _train_model_wrapper(model_kind: str, **context):
 
 
 def _task_train_logreg(**context):
-    """Обучение логистической регрессии."""
     return _train_model_wrapper("logreg", **context)
 
 
 def _task_train_rf(**context):
-    """Обучение Random Forest."""
     return _train_model_wrapper("rf", **context)
 
 
 def _task_train_gb(**context):
-    """Обучение Gradient Boosting."""
     return _train_model_wrapper("hist_gb", **context)
 
 
 def _task_select_best(**context):
-    """Выбор лучшей модели по метрике val_f1_macro."""
     _setup_env(**context)
     import shutil
     from pathlib import Path
@@ -300,7 +259,6 @@ def _task_select_best(**context):
     log = setup_auto_logging()
     log.info("Выбор лучшей модели из обученных")
 
-    # Получаем результаты из XCom
     ti = context["ti"]
     results = []
 
@@ -315,13 +273,11 @@ def _task_select_best(**context):
     if not results:
         raise ValueError("Ни одна модель не была успешно обучена")
 
-    # Выбираем лучшую по val_f1_macro
     best = max(results, key=lambda x: x["val_f1_macro"])
     log.info(
         f"Лучшая модель: {best['model']} с val_f1_macro={best['val_f1_macro']:.4f}"
     )
 
-    # Копируем лучшую модель в финальное место
     MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
     best_model_path = MODEL_FILE_DIR / "best_model.joblib"
 
@@ -330,7 +286,6 @@ def _task_select_best(**context):
         shutil.copy2(src_model, best_model_path)
         log.info(f"Лучшая модель скопирована в {best_model_path}")
 
-    # Копируем метаданные
     best_meta_path = Path(MODEL_ARTEFACTS_DIR) / "best_model_meta.json"
     src_meta = Path(best["meta_path"])
     if src_meta.exists():
@@ -353,7 +308,6 @@ with DAG(
         python_callable=_task_download,
     )
 
-    # Параллельная валидация
     validate_schema = PythonOperator(
         task_id="validate_schema",
         python_callable=_task_validate_schema,
@@ -364,7 +318,6 @@ with DAG(
         python_callable=_task_validate_quality,
     )
 
-    # Параллельное обучение моделей
     train_logreg = PythonOperator(
         task_id="train_logreg",
         python_callable=_task_train_logreg,
@@ -380,13 +333,11 @@ with DAG(
         python_callable=_task_train_gb,
     )
 
-    # Выбор лучшей модели
     select_best = PythonOperator(
         task_id="select_best",
         python_callable=_task_select_best,
     )
 
-    # Зависимости
     download >> [validate_schema, validate_quality]
     [validate_schema, validate_quality] >> [train_logreg, train_rf, train_gb]
     [train_logreg, train_rf, train_gb] >> select_best

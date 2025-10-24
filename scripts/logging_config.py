@@ -217,16 +217,16 @@ def setup_logging(
     logger_name = component_name or "kindle"
     logger = logging.getLogger(logger_name)
 
-    # Принудительно устанавливаем уровень логгера
+    # Устанавливаем уровень логгера
     numeric_level = getattr(logging, level.upper())
     logger.setLevel(numeric_level)
 
-    # Также устанавливаем уровень для хендлеров
+    # Устанавливаем уровень для хендлеров
     for handler in logger.handlers:
         handler.setLevel(numeric_level)
 
     # Логируем настройку только если логгер не был настроен ранее
-    if not hasattr(logger, '_kindle_configured'):
+    if not hasattr(logger, "_kindle_configured"):
         logger.info(
             "Логирование настроено для компонента: %s, уровень: %s, формат: %s",
             logger_name,
@@ -234,7 +234,7 @@ def setup_logging(
             log_format,
         )
         logger._kindle_configured = True
-    
+
     return logger
 
 
@@ -352,7 +352,7 @@ def auto_detect_environment() -> str:
     """
     import os
 
-    # Проверяем переменные окружения
+    # Определение среды по переменным окружения
     if os.getenv("AIRFLOW_HOME"):
         return "airflow"
     if os.getenv("DOCKER_CONTAINER") or os.path.exists("/.dockerenv"):
@@ -371,10 +371,3 @@ def setup_auto_logging() -> logging.Logger:
     """
     env = auto_detect_environment()
     return setup_for_environment(env)
-
-
-DOCKER_CONFIG = {
-    "level": "INFO",
-    "include_timestamp": True,
-    "log_file": None,  # В Docker обычно логи идут в stdout
-}

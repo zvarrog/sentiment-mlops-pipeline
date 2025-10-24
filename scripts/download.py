@@ -2,7 +2,6 @@
 
 import contextlib
 import subprocess
-import time
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -11,13 +10,10 @@ import pandas as pd
 from scripts.settings import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
 
 from .logging_config import setup_auto_logging
+from .retry_utils import retry_with_backoff
 
 ZIP_FILENAME = RAW_DATA_DIR / "kindle-reviews.zip"
 CSV_PATH = RAW_DATA_DIR / CSV_NAME
-
-# Настройки retry для скачивания с Kaggle
-MAX_RETRIES = 3
-RETRY_DELAY_SEC = 5
 
 
 def remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
@@ -25,7 +21,7 @@ def remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
     df = pd.read_csv(str(csv_path))
     first_col = str(df.columns[0])
 
-    # Проверяем различные варианты названий index-колонок
+    # Удаляем index-колонку с распространёнными именами
     if first_col in ("", "Unnamed: 0", "_c0") or first_col.startswith("Unnamed"):
         df = df.iloc[:, 1:]  # Удаляем первую колонку
         df.to_csv(csv_path, index=False)
@@ -36,41 +32,27 @@ def remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
 log = setup_auto_logging()
 
 
-def _download_with_retry(max_retries: int = MAX_RETRIES) -> None:
+@retry_with_backoff(
+    max_attempts=3, initial_delay=5.0, exceptions=(subprocess.CalledProcessError,)
+)
+def _download_with_retry() -> None:
     """Скачивание датасета с retry-логикой при ошибках сети."""
-    for attempt in range(1, max_retries + 1):
-        try:
-            log.info(
-                f"Попытка {attempt}/{max_retries}: скачивание датасета '{KAGGLE_DATASET}'..."
-            )
-            subprocess.run(
-                [
-                    "kaggle",
-                    "datasets",
-                    "download",
-                    "-d",
-                    KAGGLE_DATASET,
-                    "-p",
-                    str(RAW_DATA_DIR),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            log.info("Датасет успешно скачан")
-            return
-
-        except subprocess.CalledProcessError as e:
-            log.warning(
-                f"Ошибка при скачивании (попытка {attempt}/{max_retries}): {e.stderr}"
-            )
-
-            if attempt < max_retries:
-                log.info(f"Повтор через {RETRY_DELAY_SEC} секунд...")
-                time.sleep(RETRY_DELAY_SEC)
-            else:
-                log.error("Достигнут лимит попыток скачивания")
-                raise
+    log.info(f"Скачивание датасета '{KAGGLE_DATASET}'...")
+    subprocess.run(
+        [
+            "kaggle",
+            "datasets",
+            "download",
+            "-d",
+            KAGGLE_DATASET,
+            "-p",
+            str(RAW_DATA_DIR),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    log.info("Датасет успешно скачан")
 
 
 def main() -> Path:
@@ -98,7 +80,7 @@ def main() -> Path:
         )
         raise
 
-    log.info("Скачиваание датасета '%s' в %s...", KAGGLE_DATASET, str(RAW_DATA_DIR))
+    log.info("Скачивание датасета '%s' в %s...", KAGGLE_DATASET, str(RAW_DATA_DIR))
     try:
         _download_with_retry()
     except subprocess.CalledProcessError as e:

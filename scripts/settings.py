@@ -15,13 +15,13 @@ except ImportError:
     pass
 
 
-# === Функция для булевых переменных ===
+# Булевая переменная из окружения
 def _getenv_bool(key: str, default: str = "false") -> bool:
     """Конвертирует переменную окружения в bool."""
     return os.getenv(key, default).lower() in {"1", "true", "yes"}
 
 
-# === Директории ===
+# Директории
 RAW_DATA_DIR = Path(os.getenv("RAW_DATA_DIR", "data/raw"))
 PROCESSED_DATA_DIR = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed"))
 # Корень для всех артефактов (модель и вспомогательные файлы)
@@ -34,21 +34,21 @@ DRIFT_ARTEFACTS_DIR = Path(
     os.getenv("DRIFT_ARTEFACTS_DIR", str(MODEL_DIR / "drift_artefacts"))
 )
 
-# === Датасет ===
+# Датасет
 KAGGLE_DATASET = os.getenv("KAGGLE_DATASET", "bharadwaj6/kindle-reviews")
 CSV_NAME = os.getenv("CSV_NAME", "kindle_reviews.csv")
 JSON_NAME = os.getenv("JSON_NAME", "kindle_reviews.json")
 
-# === Флаги ===
+# Флаги
 FORCE_DOWNLOAD = _getenv_bool("FORCE_DOWNLOAD")
 FORCE_PROCESS = _getenv_bool("FORCE_PROCESS")
 FORCE_TRAIN = _getenv_bool("FORCE_TRAIN")
 
-# === Флаги дрейфа ===
+# Флаги дрейфа
 INJECT_SYNTHETIC_DRIFT = _getenv_bool("INJECT_SYNTHETIC_DRIFT")
 RUN_DRIFT_MONITOR = _getenv_bool("RUN_DRIFT_MONITOR")
 
-# === Обработка данных ===
+# Обработка данных
 PER_CLASS_LIMIT = int(os.getenv("PER_CLASS_LIMIT", "35000"))
 HASHING_TF_FEATURES = int(os.getenv("HASHING_TF_FEATURES", "6144"))
 SHUFFLE_PARTITIONS = int(os.getenv("SHUFFLE_PARTITIONS", "32"))
@@ -56,7 +56,7 @@ MIN_DF = int(os.getenv("MIN_DF", "3"))
 MIN_TF = int(os.getenv("MIN_TF", "2"))
 SEED = int(os.getenv("SEED", "42"))
 
-# === Модели и обучение ===
+# Модели и обучение
 SELECTED_MODEL_KINDS = [
     ModelKind.logreg,
     ModelKind.rf,
@@ -68,13 +68,13 @@ OPTUNA_N_TRIALS = int(os.getenv("OPTUNA_N_TRIALS", "30"))
 OPTUNA_STORAGE = os.getenv("OPTUNA_STORAGE", "sqlite:///optuna_study.db")
 STUDY_BASE_NAME = os.getenv("STUDY_BASE_NAME", "kindle_optuna")
 
-# === Connection Pooling для PostgreSQL ===
+# Пулы соединений для PostgreSQL
 DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
 DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
 DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "3600"))
 
-# === Дополнительные параметры ===
+# Дополнительные параметры
 N_FOLDS = int(os.getenv("N_FOLDS", "1"))
 TRAIN_DEVICE = os.getenv("TRAIN_DEVICE", "cpu")  # "cpu" или "cuda"
 EARLY_STOP_PATIENCE = int(os.getenv("EARLY_STOP_PATIENCE", "8"))
@@ -82,7 +82,7 @@ OPTUNA_TIMEOUT_SEC = 2400
 MIN_TRIALS_BEFORE_EARLY_STOP = 15
 DISTILBERT_TIMEOUT_SEC = int(os.getenv("DISTILBERT_TIMEOUT_SEC", "1200"))
 
-# === Настройки памяти ===
+# Настройки памяти
 MEMORY_WARNING_MB = int(
     os.getenv("MEMORY_WARNING_MB", "2048")
 )  # лимит предупреждения о памяти
@@ -107,14 +107,14 @@ TFIDF_MAX_FEATURES_STEP = int(os.getenv("TFIDF_MAX_FEATURES_STEP", "500"))
 # FORCE_SVD_THRESHOLD_MB — порог, после которого включается SVD для снижения размерности. Чем выше порог, тем выше качество, но медленнее обучение.
 FORCE_SVD_THRESHOLD_MB = int(os.getenv("FORCE_SVD_THRESHOLD_MB", "4000"))
 
-# === Spark ресурсы ===
+# Spark ресурсы
 SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY", "6g")
 SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY", "6g")
 SPARK_NUM_CORES = int(os.getenv("SPARK_NUM_CORES", "4"))
 
 log = get_logger("kindle")
 
-# === Объект settings для обратной совместимости ===
+# Объект settings для обратной совместимости
 settings = SimpleNamespace(
     force_download=FORCE_DOWNLOAD,
     force_process=FORCE_PROCESS,
