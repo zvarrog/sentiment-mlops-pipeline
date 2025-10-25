@@ -9,4 +9,4 @@
 
 # Разрешаем импорт звёздочкой исключительно как мост совместимости.
 # Потребителям рекомендуется перейти на `from scripts.config import settings`.
-from scripts.config import *  # noqa: F401,F403
+from scripts.config import *

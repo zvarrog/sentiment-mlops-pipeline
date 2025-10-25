@@ -7,7 +7,7 @@ import logging
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 
-from scripts.settings import SEED
+from scripts.config import SEED
 
 log = logging.getLogger("models")
 

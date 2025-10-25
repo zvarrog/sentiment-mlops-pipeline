@@ -174,9 +174,15 @@ class TestAirflowDAG:
         """Проверка импорта DAG без ошибок."""
         import importlib.util
 
+        dag_path = (
+            Path(__file__).parent.parent
+            / "airflow"
+            / "dags"
+            / "kindle_unified_pipeline.py"
+        )
         spec = importlib.util.spec_from_file_location(
             "kindle_unified_pipeline",
-            "airflow/dags/kindle_unified_pipeline.py",
+            str(dag_path),
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -187,9 +193,15 @@ class TestAirflowDAG:
         """Проверка наличия обязательных задач в DAG."""
         import importlib.util
 
+        dag_path = (
+            Path(__file__).parent.parent
+            / "airflow"
+            / "dags"
+            / "kindle_unified_pipeline.py"
+        )
         spec = importlib.util.spec_from_file_location(
             "kindle_unified_pipeline",
-            "airflow/dags/kindle_unified_pipeline.py",
+            str(dag_path),
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

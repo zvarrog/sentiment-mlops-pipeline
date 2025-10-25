@@ -453,8 +453,8 @@ def main() -> bool:
     """
     from pathlib import Path
 
+    from scripts.config import PROCESSED_DATA_DIR
     from scripts.logging_config import setup_auto_logging
-    from scripts.settings import PROCESSED_DATA_DIR
 
     log = setup_auto_logging()
 

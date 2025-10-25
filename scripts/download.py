@@ -7,7 +7,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 
-from scripts.settings import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
+from scripts.config import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
 
 from .logging_config import setup_auto_logging
 from .retry_utils import retry_with_backoff

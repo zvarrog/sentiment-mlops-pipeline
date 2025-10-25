@@ -15,11 +15,8 @@ from scripts.train_modules.feature_space import NUMERIC_COLS
 
 # Берём пути к артефактам динамически из окружения
 def _resolve_dirs() -> tuple[Path, Path]:
-    """Возвращает (MODEL_ARTEFACTS_DIR, DRIFT_ARTEFACTS_DIR) на основе окружения.
-
-    Приоритет: переменные окружения MODEL_ARTEFACTS_DIR/DRIFT_ARTEFACTS_DIR,
-    иначе строим от MODEL_DIR (по умолчанию 'artefacts').
-    """
+    # Приоритет: переменные окружения MODEL_ARTEFACTS_DIR/DRIFT_ARTEFACTS_DIR,
+    # иначе строим от MODEL_DIR (по умолчанию 'artefacts').
     model_dir = Path(os.getenv("MODEL_DIR", "artefacts"))
     model_arts = Path(
         os.getenv("MODEL_ARTEFACTS_DIR", str(model_dir / "model_artefacts"))
@@ -106,9 +103,12 @@ def run_drift_monitor(
 
     Возвращает список словарей: {feature, psi, drift}.
     """
-    MODEL_ARTEFACTS_DIR, DRIFT_ARTEFACTS_DIR = _resolve_dirs()
+    _, drift_artefacts_dir = _resolve_dirs()
     processed_dir = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed"))
-    baseline_path = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
+    model_artefacts_dir = Path(
+        os.getenv("MODEL_ARTEFACTS_DIR", "artefacts/model_artefacts")
+    )
+    baseline_path = model_artefacts_dir / "baseline_numeric_stats.json"
     if not baseline_path.exists():
         import logging
 
@@ -131,7 +131,7 @@ def run_drift_monitor(
         except Exception as e:
             raise RuntimeError(
                 f"Не удалось прочитать train.parquet для дрейф-мониторинга: {e}"
-            )
+            ) from e
     else:
         # Требуем наличие обучающей выборки для корректного сравнения
         raise FileNotFoundError(
@@ -139,9 +139,9 @@ def run_drift_monitor(
         )
 
     # Игнорируемые колонки
-    ignore_cols = set(
-        [c.strip() for c in os.getenv("DRIFT_IGNORE_COLS", "").split(",") if c.strip()]
-    )
+    ignore_cols = {
+        c.strip() for c in os.getenv("DRIFT_IGNORE_COLS", "").split(",") if c.strip()
+    }
 
     # Импутация как в пайплайне модели: пропуски -> 0
     def _safe_values(series: pd.Series) -> np.ndarray:
@@ -169,7 +169,7 @@ def run_drift_monitor(
         )
 
     if save:
-        default_out = DRIFT_ARTEFACTS_DIR
+        default_out = drift_artefacts_dir
         base_out = Path(out_dir) if out_dir else default_out
         plots_out = base_out / "plots"
         base_out.mkdir(parents=True, exist_ok=True)
