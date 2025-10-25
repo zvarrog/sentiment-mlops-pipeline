@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.settings import PROCESSED_DATA_DIR, SEED
+from scripts.config import PROCESSED_DATA_DIR, SEED
 
 from .feature_space import NUMERIC_COLS
 

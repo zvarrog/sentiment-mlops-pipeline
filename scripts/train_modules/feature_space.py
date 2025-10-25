@@ -7,7 +7,7 @@ import gc
 from scipy import sparse as sp
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from scripts.settings import MEMORY_WARNING_MB, log
+from scripts.config import MEMORY_WARNING_MB, log
 
 NUMERIC_COLS = [
     "text_len",

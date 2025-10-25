@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from scripts.config import INJECT_SYNTHETIC_DRIFT, PROCESSED_DATA_DIR
 from scripts.logging_config import get_logger
-from scripts.settings import INJECT_SYNTHETIC_DRIFT, PROCESSED_DATA_DIR
 
 log = get_logger("drift_injection")
 

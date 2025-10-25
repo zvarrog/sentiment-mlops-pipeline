@@ -1,5 +1,6 @@
 """Training pipeline with Optuna hyperparameter optimization and MLflow tracking."""
 
+import contextlib
 import json
 import logging
 import os
@@ -32,9 +33,7 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from scripts.models.distilbert import DistilBertClassifier
-from scripts.models.kinds import ModelKind
-from scripts.settings import (
+from scripts.config import (
     DB_MAX_OVERFLOW,
     DB_POOL_RECYCLE,
     DB_POOL_SIZE,
@@ -55,6 +54,8 @@ from scripts.settings import (
     get_tfidf_max_features_range,
     log,
 )
+from scripts.models.distilbert import DistilBertClassifier
+from scripts.models.kinds import ModelKind
 from scripts.train_modules.data_loading import load_splits
 from scripts.train_modules.feature_space import NUMERIC_COLS, DenseTransformer
 from scripts.train_modules.models import SimpleMLP
@@ -273,26 +274,20 @@ def log_confusion_matrix(y_true, y_pred, path: Path):
 
 def objective(
     trial: optuna.Trial,
-    model_name,
-    X_train,
-    y_train,
-    X_val,
-    y_val,
+    model_name: ModelKind | str,
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    X_val: pd.DataFrame,
+    y_val: np.ndarray,
     fixed_solver: str | None = None,
-):
+) -> float:
     model_kind: ModelKind = (
         model_name if isinstance(model_name, ModelKind) else ModelKind(str(model_name))
     )
     trial.set_user_attr(
         "numeric_cols", [c for c in NUMERIC_COLS if c in X_train.columns]
     )
-    try:
-        trial.set_user_attr("n_train_samples", int(len(X_train)))
-    except (TypeError, ValueError):
-        # Невалидная длина входа — пропускаем атрибут без падения
-        bare_len = getattr(X_train, "shape", [None])[0]
-        if isinstance(bare_len, int):
-            trial.set_user_attr("n_train_samples", bare_len)
+    trial.set_user_attr("n_train_samples", len(X_train))
     mlflow.log_param("model", model_kind.value)
 
     def _evaluate_with_cv_or_holdout(is_distilbert: bool) -> float:
@@ -362,10 +357,8 @@ def _early_stop_callback(patience: int, min_trials: int):
             return
         if best["since"] >= patience:
             log.info("Early stop: нет улучшений %d трейлов", patience)
-            try:
+            with contextlib.suppress(Exception):
                 study.set_user_attr("early_stopped", True)
-            except Exception:
-                pass
             study.stop()
 
     return cb
@@ -444,7 +437,7 @@ def run():
     mlflow.set_experiment(EXPERIMENT_NAME)
     log.info("MLflow tracking URI: %s", mlflow_uri)
 
-    from scripts.settings import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
+    from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
 
     MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_ARTEFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -699,22 +692,31 @@ def run():
             )
             final_pipeline = build_pipeline(fixed_trial, best_model)
             final_pipeline.fit(X_full, y_full)
-        # Атомарная запись модели (локально)
+
+        # Атомарная запись модели с очисткой временного файла
         tmp_model_path = best_path.with_suffix(".joblib.tmp")
-        joblib.dump(final_pipeline, tmp_model_path)
-        tmp_model_path.replace(best_path)
+        try:
+            joblib.dump(final_pipeline, tmp_model_path)
+            tmp_model_path.replace(best_path)
+        finally:
+            if tmp_model_path.exists():
+                tmp_model_path.unlink()
 
         # Логируем артефакт для обратной совместимости
         mlflow.log_artifact(str(best_path))
 
         # Сохраняем baseline статистики только когда модель обновляется/создаётся
-        from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
         bs_path = _MR / "baseline_numeric_stats.json"
         tmp_bs = bs_path.with_suffix(".json.tmp")
-        with open(tmp_bs, "w", encoding="utf-8") as f:
-            json.dump(_baseline_stats_cached, f, ensure_ascii=False, indent=2)
-        tmp_bs.replace(bs_path)
+        try:
+            with open(tmp_bs, "w", encoding="utf-8") as f:
+                json.dump(_baseline_stats_cached, f, ensure_ascii=False, indent=2)
+            tmp_bs.replace(bs_path)
+        finally:
+            if tmp_bs.exists():
+                tmp_bs.unlink()
         mlflow.log_artifact(str(bs_path))
 
         # Тестовая оценка (до регистрации в MLflow Registry)
@@ -813,13 +815,13 @@ def run():
             log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
 
         # Артефакты: confusion matrix + classification report
-        from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
         cm_path = _MR / "confusion_matrix_test.png"
         log_confusion_matrix(y_test, test_preds, cm_path)
         mlflow.log_artifact(str(cm_path))
         cr_txt = classification_report(y_test, test_preds)
-        from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
         cr_path = _MR / "classification_report_test.txt"
         cr_path.write_text(cr_txt, encoding="utf-8")
@@ -841,7 +843,7 @@ def run():
 
                 fi_list = _extract_feature_importances(final_pipeline, use_svd_flag)
                 if fi_list:
-                    from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+                    from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
                     fi_path = _MR / "feature_importances.json"
                     with open(fi_path, "w", encoding="utf-8") as f:
@@ -873,7 +875,7 @@ def run():
                             row[k] = t.params.get(k)
                         rows.append(row)
                     df = _pd.DataFrame(rows)
-                    from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+                    from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
                     csv_path = _MR / "optuna_top_trials.csv"
                     df.to_csv(csv_path, index=False)
@@ -921,7 +923,7 @@ def run():
                 classes = sorted(set(y_full.tolist()))
                 schema["output"] = {"target_dtype": "int", "classes": classes}
 
-            from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+            from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
             schema_path = _MR / "model_schema.json"
             with open(schema_path, "w", encoding="utf-8") as f:
@@ -983,7 +985,7 @@ def run():
                 ax_roc.set_ylabel("TPR")
                 ax_roc.set_title("ROC Curve (micro)")
                 ax_roc.legend(loc="lower right", fontsize=8)
-                from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+                from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
                 roc_path = _MR / "roc_curve_test.png"
                 fig_roc.tight_layout()
@@ -1002,7 +1004,7 @@ def run():
                 ax_pr.set_ylabel("Precision")
                 ax_pr.set_title("Precision-Recall Curve (micro)")
                 ax_pr.legend(loc="lower left", fontsize=8)
-                from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+                from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
                 pr_path = _MR / "pr_curve_test.png"
                 fig_pr.tight_layout()
@@ -1018,7 +1020,7 @@ def run():
             mis_samples = X_test.iloc[mis_idx].copy()
             mis_samples["true"] = y_test[mis_idx]
             mis_samples["pred"] = test_preds[mis_idx]
-            from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+            from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
             mis_path = _MR / "misclassified_samples_test.csv"
             mis_samples.head(200).to_csv(mis_path, index=False)
@@ -1039,7 +1041,7 @@ def run():
             "duration_sec": duration,
         }
         # Атомарная запись метаданных
-        from scripts.settings import MODEL_ARTEFACTS_DIR as _MR
+        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
         _meta_path = _MR / "best_model_meta.json"
         _meta_tmp = _meta_path.with_suffix(".json.tmp")

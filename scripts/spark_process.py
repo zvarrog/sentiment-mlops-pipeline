@@ -30,7 +30,7 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 
-from scripts.settings import (
+from scripts.config import (
     CSV_NAME,
     FORCE_PROCESS,
     HASHING_TF_FEATURES,
@@ -282,16 +282,16 @@ else:
     train_words = tokenizer.transform(train)
     vec_model = vectorizer.fit(train_words)
     train_feat = vec_model.transform(train_words)
-    idfModel = idf.fit(train_feat)
-    train = idfModel.transform(train_feat)
+    idf_model = idf.fit(train_feat)
+    train = idf_model.transform(train_feat)
 
     val_words = tokenizer.transform(val)
     val_feat = vec_model.transform(val_words)
-    val = idfModel.transform(val_feat)
+    val = idf_model.transform(val_feat)
 
     test_words = tokenizer.transform(test)
     test_feat = vec_model.transform(test_words)
-    test = idfModel.transform(test_feat)
+    test = idf_model.transform(test_feat)
 
     train = train.persist(StorageLevel.MEMORY_AND_DISK)
     val = val.persist(StorageLevel.MEMORY_AND_DISK)
@@ -303,35 +303,40 @@ else:
         str(MIN_TF),
     )
 
-    # Агрегации на train
-    user_stats = train.groupBy("reviewerID").agg(
-        avg("text_len").alias("user_avg_len"),
-        count("reviewText").alias("user_review_count"),
-    )
-    item_stats = train.groupBy("asin").agg(
-        avg("text_len").alias("item_avg_len"),
-        count("reviewText").alias("item_review_count"),
-    )
+    try:
+        # Агрегации на train
+        user_stats = train.groupBy("reviewerID").agg(
+            avg("text_len").alias("user_avg_len"),
+            count("reviewText").alias("user_review_count"),
+        )
+        item_stats = train.groupBy("asin").agg(
+            avg("text_len").alias("item_avg_len"),
+            count("reviewText").alias("item_review_count"),
+        )
 
-    # Присоединяем агрегаты к каждому датасету
-    train = train.join(user_stats, on="reviewerID", how="left").join(
-        item_stats, on="asin", how="left"
-    )
-    val = val.join(user_stats, on="reviewerID", how="left").join(
-        item_stats, on="asin", how="left"
-    )
-    test = test.join(user_stats, on="reviewerID", how="left").join(
-        item_stats, on="asin", how="left"
-    )
+        # Присоединяем агрегаты к каждому датасету
+        train = train.join(user_stats, on="reviewerID", how="left").join(
+            item_stats, on="asin", how="left"
+        )
+        val = val.join(user_stats, on="reviewerID", how="left").join(
+            item_stats, on="asin", how="left"
+        )
+        test = test.join(user_stats, on="reviewerID", how="left").join(
+            item_stats, on="asin", how="left"
+        )
 
-    log.info(
-        "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
-    )
+        log.info(
+            "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
+        )
 
-    # Сохраняем данные (путь должен быть строкой для Py4J/Java)
-    train.write.mode("overwrite").parquet(str(TRAIN_PATH))
-    val.write.mode("overwrite").parquet(str(VAL_PATH))
-    test.write.mode("overwrite").parquet(str(TEST_PATH))
+        # Сохраняем данные (путь должен быть строкой для Py4J/Java)
+        train.write.mode("overwrite").parquet(str(TRAIN_PATH))
+        val.write.mode("overwrite").parquet(str(VAL_PATH))
+        test.write.mode("overwrite").parquet(str(TEST_PATH))
+    finally:
+        train.unpersist()
+        val.unpersist()
+        test.unpersist()
 
     log.info(
         "Данные сохранены в %s",

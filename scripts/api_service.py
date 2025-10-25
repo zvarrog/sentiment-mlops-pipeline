@@ -19,6 +19,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from .config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
 from .feature_contract import FeatureContract
 
 # Настраиваем логирование для API
@@ -28,7 +29,6 @@ from .logging_config import (
     set_trace_id,
     setup_auto_logging,
 )
-from .settings import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
 
 log = setup_auto_logging()
 
@@ -344,7 +344,7 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
             ERROR_COUNT.labels(
                 method="POST", endpoint="/predict", error_type="internal_error"
             ).inc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @application.post("/batch_predict", response_model=BatchPredictResponse)
     @limiter.limit("50/minute")
@@ -379,7 +379,7 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
                     if key != "reviewText" and isinstance(value, (int, float)):
                         numeric_features.setdefault(key, []).append(float(value))
 
-            for key, values in numeric_features.items():
+            for _key, values in numeric_features.items():
                 while len(values) < len(texts):
                     values.append(0.0)
 
@@ -429,7 +429,7 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
             ERROR_COUNT.labels(
                 method="POST", endpoint="/batch_predict", error_type="internal_error"
             ).inc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @application.get("/health")
     def health_check():
