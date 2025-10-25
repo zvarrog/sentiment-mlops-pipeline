@@ -25,7 +25,6 @@ from sklearn.linear_model import LogisticRegression
 
 # локальные реализации метрик и визуализаций ниже
 from sklearn.metrics import (
-    accuracy_score,
     classification_report,
     confusion_matrix,
     f1_score,
@@ -57,6 +56,7 @@ from scripts.config import (
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
 from scripts.train_modules.data_loading import load_splits
+from scripts.train_modules.evaluation import compute_metrics
 from scripts.train_modules.feature_space import NUMERIC_COLS, DenseTransformer
 from scripts.train_modules.models import SimpleMLP
 
@@ -242,14 +242,6 @@ def build_pipeline(
 
     steps.append(("model", clf))
     return Pipeline(steps)
-
-
-def compute_metrics(y_true, y_pred) -> dict[str, float]:
-    return {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "f1_macro": f1_score(y_true, y_pred, average="macro"),
-        "f1_weighted": f1_score(y_true, y_pred, average="weighted"),
-    }
 
 
 def log_confusion_matrix(y_true, y_pred, path: Path):
@@ -862,7 +854,7 @@ def run():
                 valid_trials.sort(key=lambda t: t.value, reverse=True)
                 top_trials = valid_trials[:top_k]
                 if top_trials:
-                    import pandas as _pd  # локальный импорт, чтобы не засорять глобалы
+                    import pandas as _pd
 
                     # Собираем плоский датафрейм: number, value, затем параметры
                     all_param_keys = sorted(

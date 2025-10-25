@@ -15,13 +15,15 @@ from sklearn.metrics import (
 log = logging.getLogger("evaluation")
 
 
-def compute_metrics(y_true, y_pred):
-    """
-    Вычисляет метрики качества модели.
+def compute_metrics(y_true, y_pred) -> dict[str, float]:
+    """Вычисляет базовые метрики качества модели.
+
+    Возвращает accuracy, f1_macro и f1_weighted для единообразия во всём проекте.
     """
     return {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "f1_macro": f1_score(y_true, y_pred, average="macro"),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
+        "f1_weighted": float(f1_score(y_true, y_pred, average="weighted")),
     }
 
 

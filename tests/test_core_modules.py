@@ -13,6 +13,9 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.metrics import f1_score
+
+from scripts.train_modules.evaluation import compute_metrics
 
 
 class TestDataLoading:
@@ -22,22 +25,22 @@ class TestDataLoading:
         """load_splits возвращает 6 объектов: X_train, X_val, X_test, y_train, y_val, y_test."""
         from scripts.train_modules.data_loading import load_splits
 
-        X_train, X_val, X_test, y_train, y_val, y_test = load_splits()
+        x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
 
-        assert X_train is not None
-        assert len(X_train) > 0
-        assert len(y_train) == len(X_train)
-        assert len(X_val) > 0
-        assert len(X_test) > 0
+        assert x_train is not None
+        assert len(x_train) > 0
+        assert len(y_train) == len(x_train)
+        assert len(x_val) > 0
+        assert len(x_test) > 0
 
     def test_load_splits_has_required_columns(self, sample_parquet_files):
         """X содержит reviewText и числовые признаки."""
         from scripts.train_modules.data_loading import load_splits
 
-        X_train, _, _, _, _, _ = load_splits()
+        x_train, _, _, _, _, _ = load_splits()
 
-        assert "reviewText" in X_train.columns
-        assert len(X_train.columns) > 1
+        assert "reviewText" in x_train.columns
+        assert len(x_train.columns) > 1
 
 
 class TestFeatureSpace:
@@ -77,6 +80,19 @@ class TestFeatureSpace:
         assert isinstance(NUMERIC_COLS, list)
         assert len(NUMERIC_COLS) > 0
         assert all(isinstance(col, str) for col in NUMERIC_COLS)
+
+    def test_numeric_cols_are_numeric_type(self, sample_parquet_files):
+        """Все NUMERIC_COLS имеют числовой dtype после загрузки сплитов."""
+        from scripts.train_modules.data_loading import load_splits
+        from scripts.train_modules.feature_space import NUMERIC_COLS
+
+        x_train, _, _, _, _, _ = load_splits()
+
+        for col in NUMERIC_COLS:
+            if col in x_train.columns:
+                assert pd.api.types.is_numeric_dtype(x_train[col]), (
+                    f"{col} имеет нечисловой тип: {x_train[col].dtype}"
+                )
 
 
 class TestFeatureContract:
@@ -205,6 +221,36 @@ class TestDataValidation:
 
         assert len(errors) > 0
         assert any("reviewText" in err for err in errors)
+
+
+class TestEvaluation:
+    """Тесты для метрик качества моделей."""
+
+    def test_compute_metrics_perfect_prediction(self):
+        """Идеальное предсказание даёт метрики 1.0."""
+        y_true_arr = np.array([1, 2, 3, 4, 5] * 20)
+        y_pred_arr = y_true_arr.copy()
+        m = compute_metrics(y_true_arr, y_pred_arr)
+        assert m["accuracy"] == 1.0
+        assert m["f1_macro"] == 1.0
+        assert m["f1_weighted"] == 1.0
+
+    def test_compute_metrics_worst_prediction(self):
+        """Всегда неверные предсказания → accuracy 0, F1 близко к 0."""
+        y_true_arr = np.array([1] * 100)
+        y_pred_arr = np.array([5] * 100)
+        m = compute_metrics(y_true_arr, y_pred_arr)
+        assert m["accuracy"] == 0.0
+        assert m["f1_macro"] <= 0.01
+
+    def test_compute_metrics_matches_sklearn(self):
+        """Наш f1_macro совпадает со sklearn f1_score(average='macro')."""
+        rng = np.random.default_rng(42)
+        y_true_arr = rng.integers(1, 6, size=1000)
+        y_pred_arr = rng.integers(1, 6, size=1000)
+        our = compute_metrics(y_true_arr, y_pred_arr)["f1_macro"]
+        skl = float(f1_score(y_true_arr, y_pred_arr, average="macro"))
+        assert abs(our - skl) < 1e-6
 
 
 class TestDriftMonitor:
