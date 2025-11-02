@@ -37,6 +37,7 @@ from scripts.config import (
     EARLY_STOP_PATIENCE,
     FORCE_SVD_THRESHOLD_MB,
     MIN_TRIALS_BEFORE_EARLY_STOP,
+    MLFLOW_TRACKING_URI,
     MODEL_PRODUCTION_THRESHOLD,
     N_FOLDS,
     OPTUNA_N_TRIALS,
@@ -44,7 +45,6 @@ from scripts.config import (
     OPTUNA_TIMEOUT_SEC,
     SEED,
     SELECTED_MODEL_KINDS,
-    MLFLOW_TRACKING_URI,
     STUDY_BASE_NAME,
     TRAIN_DEVICE,
     get_tfidf_max_features_range,
@@ -88,7 +88,9 @@ def build_pipeline(
             DISTILBERT_MIN_EPOCHS,
         )
 
-        epochs = trial.suggest_int("db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS)
+        epochs = trial.suggest_int(
+            "db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS
+        )
         lr = trial.suggest_float("db_lr", 1e-5, 5e-5, log=True)
         max_len = trial.suggest_int("db_max_len", 96, 192, step=32)
         use_bi = trial.suggest_categorical("db_use_bigrams", [False, True])
@@ -413,6 +415,7 @@ def _extract_feature_importances(
 
 def run():
     import mlflow
+
     from .logging_config import setup_training_logging
 
     setup_training_logging()
@@ -704,7 +707,7 @@ def run():
         finally:
             if tmp_bs.exists():
                 tmp_bs.unlink()
-        
+
         try:
             mlflow.log_artifact(str(bs_path))
         except Exception as e:

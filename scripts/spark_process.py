@@ -124,7 +124,9 @@ def process_data() -> None:
     MAX_TEXT_CHARS = 2000
     text_col = lower(substring(col("reviewText"), 1, MAX_TEXT_CHARS))
     # Цепь regexp_replace для текстовой очистки
-    text_col = regexp_replace(text_col, r"[\u200b\ufeff\u00A0]", " ")  # невидимые пробелы
+    text_col = regexp_replace(
+        text_col, r"[\u200b\ufeff\u00A0]", " "
+    )  # невидимые пробелы
     text_col = regexp_replace(text_col, r"<[^>]+>", " ")  # HTML
     text_col = regexp_replace(text_col, r"http\S+", " ")  # URL
     text_col = regexp_replace(text_col, r"[\u2018\u2019]", "'")  # умные кавычки
@@ -195,6 +197,7 @@ def process_data() -> None:
 
         try:
             from textblob import TextBlob
+
             blob = TextBlob(text)
             polarity = blob.sentiment.polarity
             return float(max(-1.0, min(1.0, round(polarity, 4))))
@@ -269,15 +272,23 @@ def process_data() -> None:
 
     try:
         # Агрегации на train
-        user_stats = train.groupBy("reviewerID").agg(
-            avg("text_len").alias("user_avg_len"),
-            count("reviewText").alias("user_review_count"),
-        ).persist(StorageLevel.MEMORY_AND_DISK)
+        user_stats = (
+            train.groupBy("reviewerID")
+            .agg(
+                avg("text_len").alias("user_avg_len"),
+                count("reviewText").alias("user_review_count"),
+            )
+            .persist(StorageLevel.MEMORY_AND_DISK)
+        )
 
-        item_stats = train.groupBy("asin").agg(
-            avg("text_len").alias("item_avg_len"),
-            count("reviewText").alias("item_review_count"),
-        ).persist(StorageLevel.MEMORY_AND_DISK)
+        item_stats = (
+            train.groupBy("asin")
+            .agg(
+                avg("text_len").alias("item_avg_len"),
+                count("reviewText").alias("item_review_count"),
+            )
+            .persist(StorageLevel.MEMORY_AND_DISK)
+        )
 
         # Батчируем join для всех выборок
         train = train.join(user_stats, on="reviewerID", how="left").join(

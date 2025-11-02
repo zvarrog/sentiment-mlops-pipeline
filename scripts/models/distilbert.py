@@ -133,6 +133,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         patience_counter = 0
 
         from scripts.config import DISTILBERT_EARLY_STOP_PATIENCE
+
         patience = DISTILBERT_EARLY_STOP_PATIENCE
 
         for epoch in range(self.epochs):

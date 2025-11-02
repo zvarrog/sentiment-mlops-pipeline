@@ -12,10 +12,11 @@
 
 Предполагается, что модель уже сохранена как best_model.joblib в MODEL_FILE_DIR.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 from typing import Any
 
 import joblib
@@ -124,24 +125,38 @@ def _save_schema(pipeline, classes, x_train: pd.DataFrame, out_dir: Path) -> Pat
     return schema_path
 
 
-def _save_roc_pr(pipeline, x_test: pd.DataFrame, y_test, out_dir: Path) -> tuple[Path | None, Path | None]:
+def _save_roc_pr(
+    pipeline, x_test: pd.DataFrame, y_test, out_dir: Path
+) -> tuple[Path | None, Path | None]:
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_curve
+        from sklearn.metrics import (
+            auc,
+            average_precision_score,
+            precision_recall_curve,
+            roc_curve,
+        )
         from sklearn.preprocessing import label_binarize
 
         if not hasattr(pipeline, "predict_proba"):
             return None, None
 
-        x_for_proba = x_test if "pre" in getattr(pipeline, "named_steps", {}) else x_test["reviewText"]
+        x_for_proba = (
+            x_test
+            if "pre" in getattr(pipeline, "named_steps", {})
+            else x_test["reviewText"]
+        )
         y_score = pipeline.predict_proba(x_for_proba)
         classes = sorted(set(y_test.tolist()))
         y_true_bin = label_binarize(y_test, classes=classes)
 
         if y_score.shape[1] != y_true_bin.shape[1]:
-            proba_aligned = np.zeros((y_score.shape[0], y_true_bin.shape[1]), dtype=float)
+            proba_aligned = np.zeros(
+                (y_score.shape[0], y_true_bin.shape[1]), dtype=float
+            )
             try:
                 cls_model = list(getattr(pipeline, "classes_", []))
             except Exception:
@@ -167,7 +182,9 @@ def _save_roc_pr(pipeline, x_test: pd.DataFrame, y_test, out_dir: Path) -> tuple
         fig_roc.savefig(roc_path)
         plt.close(fig_roc)
 
-        precision, recall, _ = precision_recall_curve(y_true_bin.ravel(), y_score.ravel())
+        precision, recall, _ = precision_recall_curve(
+            y_true_bin.ravel(), y_score.ravel()
+        )
         ap_micro = average_precision_score(y_true_bin, y_score, average="micro")
         fig_pr, ax_pr = plt.subplots(figsize=(4, 4))
         ax_pr.plot(recall, precision, label=f"micro-avg PR (AP={ap_micro:.3f})")
@@ -186,7 +203,9 @@ def _save_roc_pr(pipeline, x_test: pd.DataFrame, y_test, out_dir: Path) -> tuple
         return None, None
 
 
-def _save_misclassified(x_test: pd.DataFrame, y_test, y_pred, out_dir: Path) -> Path | None:
+def _save_misclassified(
+    x_test: pd.DataFrame, y_test, y_pred, out_dir: Path
+) -> Path | None:
     try:
         mis_idx = np.where(y_pred != y_test)[0]
         if len(mis_idx) == 0:
@@ -230,7 +249,9 @@ def generate_best_bundle(
     pipeline = joblib.load(pipeline_path)
     try:
         x_for_test = (
-            x_test if "pre" in getattr(pipeline, "named_steps", {}) else x_test["reviewText"]
+            x_test
+            if "pre" in getattr(pipeline, "named_steps", {})
+            else x_test["reviewText"]
         )
         test_preds = pipeline.predict(x_for_test)
     except Exception:
@@ -240,11 +261,18 @@ def generate_best_bundle(
     test_metrics: dict[str, Any] = {}
     if test_preds is not None:
         from scripts.train_modules.evaluation import compute_metrics
+
         _save_confusion_and_report(y_test, test_preds, out_dir)
         test_metrics = compute_metrics(y_test, test_preds)
 
     # 4) схема и FI
-    classes = sorted(set(pd.Series(y_train).tolist() + pd.Series(y_val).tolist() + pd.Series(y_test).tolist()))
+    classes = sorted(
+        set(
+            pd.Series(y_train).tolist()
+            + pd.Series(y_val).tolist()
+            + pd.Series(y_test).tolist()
+        )
+    )
     _save_schema(pipeline, classes, x_train, out_dir)
     _save_feature_importances(pipeline, out_dir)
 
