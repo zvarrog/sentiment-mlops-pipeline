@@ -158,6 +158,7 @@ def log_task_duration(**context):
 
     try:
         from scripts.logging_config import setup_auto_logging
+
         _log = setup_auto_logging()
         pg_hook = PostgresHook(postgres_conn_id="metrics_db")
         pg_hook.run(
@@ -171,6 +172,7 @@ def log_task_duration(**context):
         )
     except Exception as e:
         import contextlib
+
         with contextlib.suppress(Exception):
             _log.warning(f"Не удалось залогировать метрику задачи: {e}")
 
@@ -180,6 +182,7 @@ def log_task_failure(**context):
 
     try:
         from scripts.logging_config import setup_auto_logging
+
         _log = setup_auto_logging()
         duration = ti.duration if ti.duration else 0
 
@@ -195,6 +198,7 @@ def log_task_failure(**context):
         )
     except Exception as e:
         import contextlib
+
         with contextlib.suppress(Exception):
             _log.warning(f"Не удалось залогировать ошибку задачи: {e}")
 
