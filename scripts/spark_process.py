@@ -120,25 +120,9 @@ def process_data() -> None:
         multiLine=True,
     )
 
-    # Легкая очистка текста: truncate → lower → normalize → remove html/url/non-latin → collapse spaces
-    MAX_TEXT_CHARS = 2000
-    text_col = lower(substring(col("reviewText"), 1, MAX_TEXT_CHARS))
-    # Цепь regexp_replace для текстовой очистки
-    text_col = regexp_replace(
-        text_col, r"[\u200b\ufeff\u00A0]", " "
-    )  # невидимые пробелы
-    text_col = regexp_replace(text_col, r"<[^>]+>", " ")  # HTML
-    text_col = regexp_replace(text_col, r"http\S+", " ")  # URL
-    text_col = regexp_replace(text_col, r"[\u2018\u2019]", "'")  # умные кавычки
-    text_col = regexp_replace(text_col, r"[\u201C\u201D]", '"')
-    text_col = regexp_replace(text_col, r"[\u2013\u2014]", "-")  # em-dash
-    text_col = regexp_replace(
-        text_col,
-        r"\b(kindle edition|prime reading|whispersync|borrow(?:ed)? for free|free sample|look inside)\b",
-        " ",
-    )  # ebook-метки
-    text_col = regexp_replace(text_col, r"[^a-z ]", " ")  # только латиница
-    text_col = regexp_replace(text_col, r"\s+", " ")  # collapse spaces
+    max_text_chars = 5000
+    text_col = lower(substring(col("reviewText"), 1, max_text_chars))
+    text_col = regexp_replace(text_col, r"[^a-z ]+", " ")
     df = df.withColumn("reviewText", text_col)
 
     # Чистим данные: валидные тексты и оценки
@@ -156,9 +140,6 @@ def process_data() -> None:
     log.info(
         "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, balanced_count
     )
-
-    # Кэшируем после дорогой балансировки
-    clean = clean.persist(StorageLevel.MEMORY_AND_DISK)
 
     # Батчируем добавление признаков в один .select() вместо цепи .withColumn()
     clean = clean.select(
@@ -179,10 +160,11 @@ def process_data() -> None:
         "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
     )
 
-    # Sentiment анализ с TextBlob — UDF должен быть stateless (без SparkSession)
     from pyspark.sql.functions import udf
     from pyspark.sql.types import FloatType
+    from textblob import TextBlob
 
+    @udf(FloatType())
     def calculate_sentiment_textblob(text: str) -> float:
         """Вычисляет sentiment score с помощью TextBlob.
 
@@ -196,8 +178,6 @@ def process_data() -> None:
             return 0.0
 
         try:
-            from textblob import TextBlob
-
             blob = TextBlob(text)
             polarity = blob.sentiment.polarity
             return float(max(-1.0, min(1.0, round(polarity, 4))))
@@ -205,10 +185,7 @@ def process_data() -> None:
             # На случай ошибки парсинга — возвращаем нейтральный sentiment
             return 0.0
 
-    # Регистрируем UDF для sentiment анализа
-    sentiment_udf = udf(calculate_sentiment_textblob, FloatType())
-
-    clean = clean.withColumn("sentiment", sentiment_udf(col("reviewText")))
+    clean = clean.withColumn("sentiment", calculate_sentiment_textblob(col("reviewText")))
 
     # Дополнительные sentiment метрики для анализа
     clean = clean.withColumn(
@@ -223,6 +200,8 @@ def process_data() -> None:
         .when(abs(col("sentiment")) > 0.2, "moderate")
         .otherwise("weak"),
     )
+
+    clean = clean.persist(StorageLevel.MEMORY_AND_DISK)
 
     # Делим на выборки
     train, val, test = clean.randomSplit([0.7, 0.15, 0.15], seed=42)

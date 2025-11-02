@@ -73,6 +73,24 @@ _model_sig = "_".join([m.value[:3] for m in sorted(SELECTED_MODEL_KINDS)])
 OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
 
 
+def log_artifact_safe(path: Path, artifact_name: str) -> None:
+    """Безопасная логирование артефакта в MLflow с обработкой ошибок.
+
+    Args:
+        path: Путь к файлу артефакта
+        artifact_name: Описательное имя артефакта для логирования
+
+    Note:
+        Функция использует graceful degradation - при ошибке записывается warning,
+        но выполнение программы продолжается. Это предотвращает прерывание обучения
+        из-за проблем с MLflow tracking server.
+    """
+    try:
+        mlflow.log_artifact(str(path))
+    except Exception as e:
+        log.warning("Не удалось залогировать %s артефакт: %s", artifact_name, e)
+
+
 def build_pipeline(
     trial: optuna.Trial, model_name, fixed_solver: str | None = None
 ) -> Pipeline:
@@ -689,11 +707,8 @@ def run():
             if tmp_model_path.exists():
                 tmp_model_path.unlink()
 
-        # Логируем артефакты (с graceful degradation если не получится)
-        try:
-            mlflow.log_artifact(str(best_path))
-        except Exception as e:
-            log.warning("Не удалось залогировать best_path артефакт: %s", e)
+        # Логируем артефакты модели (с graceful degradation)
+        log_artifact_safe(best_path, "best_model")
 
         # Сохраняем baseline статистики только когда модель обновляется/создаётся
         from scripts.config import MODEL_ARTEFACTS_DIR as _MR
@@ -708,10 +723,7 @@ def run():
             if tmp_bs.exists():
                 tmp_bs.unlink()
 
-        try:
-            mlflow.log_artifact(str(bs_path))
-        except Exception as e:
-            log.warning("Не удалось залогировать baseline_stats артефакт: %s", e)
+        log_artifact_safe(bs_path, "baseline_stats")
 
         # Тестовая оценка (до регистрации в MLflow Registry)
         if best_model is ModelKind.distilbert:
@@ -815,13 +827,13 @@ def run():
 
         cm_path = _MR / "confusion_matrix_test.png"
         log_confusion_matrix(y_test, test_preds, cm_path)
-        mlflow.log_artifact(str(cm_path))
+        log_artifact_safe(cm_path, "confusion_matrix")
         cr_txt = classification_report(y_test, test_preds)
         from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
         cr_path = _MR / "classification_report_test.txt"
         cr_path.write_text(cr_txt, encoding="utf-8")
-        mlflow.log_artifact(str(cr_path))
+        log_artifact_safe(cr_path, "classification_report")
 
         # Feature importances (для классических моделей)
         if best_model is not ModelKind.distilbert:
@@ -844,7 +856,7 @@ def run():
                     fi_path = _MR / "feature_importances.json"
                     with open(fi_path, "w", encoding="utf-8") as f:
                         json.dump(fi_list, f, ensure_ascii=False, indent=2)
-                    mlflow.log_artifact(str(fi_path))
+                    log_artifact_safe(fi_path, "feature_importances")
             except Exception as e:
                 log.warning("Не удалось сохранить feature importances: %s", e)
 
@@ -875,7 +887,7 @@ def run():
 
                     csv_path = _MR / "optuna_top_trials.csv"
                     df.to_csv(csv_path, index=False)
-                    mlflow.log_artifact(str(csv_path))
+                    log_artifact_safe(csv_path, "optuna_top_trials")
         except Exception as e:
             log.warning("Не удалось сохранить топ-K трейлов Optuna: %s", e)
 
@@ -924,7 +936,7 @@ def run():
             schema_path = _MR / "model_schema.json"
             with open(schema_path, "w", encoding="utf-8") as f:
                 json.dump(schema, f, ensure_ascii=False, indent=2)
-            mlflow.log_artifact(str(schema_path))
+            log_artifact_safe(schema_path, "model_schema")
         except Exception as e:
             log.warning("Не удалось сохранить схему модели: %s", e)
 
@@ -987,7 +999,7 @@ def run():
                 fig_roc.tight_layout()
                 fig_roc.savefig(roc_path)
                 plt.close(fig_roc)
-                mlflow.log_artifact(str(roc_path))
+                log_artifact_safe(roc_path, "roc_curve")
 
                 # PR micro-average
                 precision, recall, _ = precision_recall_curve(
@@ -1006,7 +1018,7 @@ def run():
                 fig_pr.tight_layout()
                 fig_pr.savefig(pr_path)
                 plt.close(fig_pr)
-                mlflow.log_artifact(str(pr_path))
+                log_artifact_safe(pr_path, "pr_curve")
         except Exception as e:
             log.warning("Не удалось построить ROC/PR кривые: %s", e)
 
@@ -1020,7 +1032,7 @@ def run():
 
             mis_path = _MR / "misclassified_samples_test.csv"
             mis_samples.head(200).to_csv(mis_path, index=False)
-            mlflow.log_artifact(str(mis_path))
+            log_artifact_safe(mis_path, "misclassified_samples")
 
         duration = time.time() - start_time
         mlflow.log_metric("training_duration_sec", duration)

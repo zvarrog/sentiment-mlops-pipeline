@@ -541,13 +541,12 @@ def _build_dataframe(
             else:
                 df[col] = values
 
-    # Автоматическое вычисление текстовых признаков через mapping
+    from textblob import TextBlob
+
     def _text_feature_extractors():
         """Набор извлечения простых текстовых признаков (len, counts, sentiment)."""
 
         def _sentiment_textblob(s: pd.Series) -> pd.Series:
-            from textblob import TextBlob
-
             def calculate_sentiment(text):
                 if not text or len(str(text).strip()) < 3:
                     return 0.0

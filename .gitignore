@@ -5,26 +5,7 @@ __pycache__/
 kaggle.json
 .vscode/
 
-# Данные и обработанные файлы
 data/raw/
 data/processed/
-
-# MLflow и артефакты моделей
 mlruns/
 artefacts/model_artefacts/candidates/
-
-# Базы данных
-*.db
-*.db-journal
-optuna_study.db
-
-# Логи
-*.log
-logs/
-airflow_logs/
-
-# Docker volumes (если монтируются)
-pgdata/
-mlruns_data/
-prometheus_data/
-grafana_data/
