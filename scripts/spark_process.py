@@ -185,7 +185,9 @@ def process_data() -> None:
             # На случай ошибки парсинга — возвращаем нейтральный sentiment
             return 0.0
 
-    clean = clean.withColumn("sentiment", calculate_sentiment_textblob(col("reviewText")))
+    clean = clean.withColumn(
+        "sentiment", calculate_sentiment_textblob(col("reviewText"))
+    )
 
     # Дополнительные sentiment метрики для анализа
     clean = clean.withColumn(
