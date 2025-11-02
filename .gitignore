@@ -11,7 +11,7 @@ data/processed/
 
 # MLflow и артефакты моделей
 mlruns/
-artefacts/
+artefacts/model_artefacts/candidates/
 
 # Базы данных
 *.db
