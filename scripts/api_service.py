@@ -479,13 +479,35 @@ def _load_artifacts(application: FastAPI) -> None:
     application.state.MODEL = joblib.load(BEST_MODEL_PATH)
     log.info("Модель загружена: %s", BEST_MODEL_PATH)
 
-    application.state.META = json.loads(META_PATH.read_text(encoding="utf-8"))
-    application.state.NUMERIC_DEFAULTS = json.loads(
-        BASELINE_NUMERIC_PATH.read_text(encoding="utf-8")
-    )
-    application.state.FEATURE_CONTRACT = FeatureContract.from_model_artifacts(
-        MODEL_ARTEFACTS_DIR
-    )
+    # Метаданные модели (обязательно)
+    if not META_PATH.exists():
+        log.warning("Метаданные модели не найдены: %s", META_PATH)
+        application.state.META = {}
+    else:
+        application.state.META = json.loads(META_PATH.read_text(encoding="utf-8"))
+
+    # Baseline статистики (опционально, используются для мониторинга дрифта)
+    if BASELINE_NUMERIC_PATH.exists():
+        application.state.NUMERIC_DEFAULTS = json.loads(
+            BASELINE_NUMERIC_PATH.read_text(encoding="utf-8")
+        )
+        log.info("Baseline статистики загружены")
+    else:
+        log.warning(
+            "Baseline статистики не найдены: %s (дрифт-мониторинг недоступен)",
+            BASELINE_NUMERIC_PATH,
+        )
+        application.state.NUMERIC_DEFAULTS = {}
+
+    # Контракт признаков (опционально)
+    try:
+        application.state.FEATURE_CONTRACT = FeatureContract.from_model_artifacts(
+            MODEL_ARTEFACTS_DIR
+        )
+    except Exception as e:
+        log.warning("Не удалось загрузить контракт признаков: %s", e)
+        application.state.FEATURE_CONTRACT = None
+
     log.info("Артефакты модели успешно загружены")
 
 

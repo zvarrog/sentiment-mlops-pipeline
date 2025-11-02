@@ -1,24 +1,18 @@
 services:
   postgres:
     image: postgres:15
-    env_file:
-      - .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-admin}
-      # В проде используем файл секрета, пароль напрямую не задаём
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: optuna
-      # Создаем дополнительные БД для Airflow метаданных и метрик
       POSTGRES_MULTIPLE_DATABASES: airflow_meta,metrics
     ports:
       - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
-    secrets:
-      - postgres_password
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U admin -d optuna']
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-admin} -d optuna']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -38,7 +32,13 @@ services:
       --default-artifact-root /mlflow/artifacts
       --host 0.0.0.0
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:5000/health']
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          'import urllib.request; urllib.request.urlopen("http://localhost:5000/health")',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -58,10 +58,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow_meta'
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
-      # Соединения с БД
       AIRFLOW_CONN_METRICS_DB: 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/metrics'
-      OPTUNA_STORAGE: 'postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/optuna'
-      MLFLOW_TRACKING_URI: 'http://mlflow:5000'
       JAVA_HOME: /usr/lib/jvm/default-java
       PYTHONPATH: /opt/airflow
       GIT_PYTHON_REFRESH: 'quiet'
@@ -69,9 +66,7 @@ services:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./scripts:/opt/airflow/scripts:ro
       - ./data:/opt/airflow/data
-      # Путь должен совпадать с MODEL_DIR/ARTEFACTS_DIR в настройках приложения
       - ./artefacts:/opt/airflow/artefacts
-      - mlruns_data:/opt/airflow/mlruns
       - airflow_logs:/opt/airflow/logs
       # Монтируем kaggle.json через переменную окружения KAGGLE_JSON.
       # По умолчанию файл ожидается в корне проекта ./kaggle.json.
@@ -203,7 +198,3 @@ volumes:
   airflow_logs:
   prometheus_data:
   grafana_data:
-
-secrets:
-  postgres_password:
-    file: ./secrets/postgres_password.txt

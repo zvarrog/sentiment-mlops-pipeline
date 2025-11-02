@@ -2,9 +2,9 @@
 FROM apache/airflow:2.10.2
 
 USER root
-# Java для PySpark и logrotate для ротации логов
+# Java для PySpark и logrotate для ротации логов, curl для healthcheck/startup проверок
 RUN apt-get update && \
-    apt-get install -y default-jre-headless logrotate cron && \
+    apt-get install -y default-jre-headless logrotate cron curl ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV JAVA_HOME=/usr/lib/jvm/default-java

@@ -33,21 +33,18 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from scripts.config import (
-    DB_MAX_OVERFLOW,
-    DB_POOL_RECYCLE,
-    DB_POOL_SIZE,
-    DB_POOL_TIMEOUT,
     DISTILBERT_TIMEOUT_SEC,
     EARLY_STOP_PATIENCE,
     FORCE_SVD_THRESHOLD_MB,
-    FORCE_TRAIN,
     MIN_TRIALS_BEFORE_EARLY_STOP,
+    MODEL_PRODUCTION_THRESHOLD,
     N_FOLDS,
     OPTUNA_N_TRIALS,
     OPTUNA_STORAGE,
     OPTUNA_TIMEOUT_SEC,
     SEED,
     SELECTED_MODEL_KINDS,
+    MLFLOW_TRACKING_URI,
     STUDY_BASE_NAME,
     TRAIN_DEVICE,
     get_tfidf_max_features_range,
@@ -86,7 +83,12 @@ def build_pipeline(
         model_kind = ModelKind(str(model_name))
 
     if model_kind is ModelKind.distilbert:
-        epochs = trial.suggest_int("db_epochs", 1, 2)
+        from scripts.config import (
+            DISTILBERT_MAX_EPOCHS,
+            DISTILBERT_MIN_EPOCHS,
+        )
+
+        epochs = trial.suggest_int("db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS)
         lr = trial.suggest_float("db_lr", 1e-5, 5e-5, log=True)
         max_len = trial.suggest_int("db_max_len", 96, 192, step=32)
         use_bi = trial.suggest_categorical("db_use_bigrams", [False, True])
@@ -192,11 +194,12 @@ def build_pipeline(
             solver = trial.suggest_categorical(
                 "logreg_solver", ["lbfgs", "liblinear", "saga"]
             )
-        penalty_options = ["l1", "l2"]
-        if solver == "lbfgs":
-            penalty_options = ["l2"]
-
-        penalty = trial.suggest_categorical("logreg_penalty", penalty_options)
+        # Стабильные распределения без динамики пространства для одной study
+        pen_lbfgs = trial.suggest_categorical("logreg_penalty_lbfgs", ["l2"])
+        pen_others = trial.suggest_categorical(
+            "logreg_penalty_liblinear_saga", ["l1", "l2"]
+        )
+        penalty = pen_lbfgs if solver == "lbfgs" else pen_others
         if solver == "lbfgs":
             steps.append(("to_dense", DenseTransformer()))
         clf = LogisticRegression(
@@ -409,6 +412,7 @@ def _extract_feature_importances(
 
 
 def run():
+    import mlflow
     from .logging_config import setup_training_logging
 
     setup_training_logging()
@@ -424,10 +428,8 @@ def run():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-    mlflow.set_tracking_uri(mlflow_uri)
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
-    log.info("MLflow tracking URI: %s", mlflow_uri)
 
     from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
 
@@ -436,7 +438,8 @@ def run():
     best_path = MODEL_FILE_DIR / "best_model.joblib"
     best_meta_path = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
 
-    log.info("FORCE_TRAIN=%s, best_model exists=%s", FORCE_TRAIN, best_path.exists())
+    force_train = bool(int(os.environ.get("FORCE_TRAIN", "0")))
+    log.info("FORCE_TRAIN=%s, наличие best_model=%s", force_train, best_path.exists())
 
     old_model_metric = None
     if best_meta_path.exists():
@@ -452,7 +455,7 @@ def run():
         except Exception as e:
             log.warning("Не удалось загрузить метаданные старой модели: %s", e)
 
-    if best_path.exists() and not FORCE_TRAIN:
+    if best_path.exists() and not force_train:
         log.info("Модель уже существует и FORCE_TRAIN=False — пропуск")
         return
 
@@ -515,25 +518,14 @@ def run():
             pruner = optuna.pruners.MedianPruner(n_startup_trials=5)
             study_name = f"{STUDY_BASE_NAME}_{model_name.value}{('_' + fixed_solver) if fixed_solver else ''}_{_model_sig}"
             with mlflow.start_run(nested=True, run_name=f"model={model_name.value}"):
-                # Connection pooling для PostgreSQL
-                storage_kwargs = {}
-                if OPTUNA_STORAGE.startswith("postgresql"):
-                    storage_kwargs = {
-                        "engine_kwargs": {
-                            "pool_size": DB_POOL_SIZE,
-                            "max_overflow": DB_MAX_OVERFLOW,
-                            "pool_timeout": DB_POOL_TIMEOUT,
-                            "pool_recycle": DB_POOL_RECYCLE,
-                        }
-                    }
-
+                # Создаем study с правильной конфигурацией хранилища
+                # engine_kwargs передается через конструктор RDBStorage, а не напрямую create_study
                 study = optuna.create_study(
                     direction="maximize",
                     pruner=pruner,
                     storage=OPTUNA_STORAGE,
                     study_name=study_name,
                     load_if_exists=True,
-                    **storage_kwargs,
                 )
                 mlflow.log_param("study_name", study_name)
                 mlflow.log_param(
@@ -694,8 +686,11 @@ def run():
             if tmp_model_path.exists():
                 tmp_model_path.unlink()
 
-        # Логируем артефакт для обратной совместимости
-        mlflow.log_artifact(str(best_path))
+        # Логируем артефакты (с graceful degradation если не получится)
+        try:
+            mlflow.log_artifact(str(best_path))
+        except Exception as e:
+            log.warning("Не удалось залогировать best_path артефакт: %s", e)
 
         # Сохраняем baseline статистики только когда модель обновляется/создаётся
         from scripts.config import MODEL_ARTEFACTS_DIR as _MR
@@ -709,7 +704,11 @@ def run():
         finally:
             if tmp_bs.exists():
                 tmp_bs.unlink()
-        mlflow.log_artifact(str(bs_path))
+        
+        try:
+            mlflow.log_artifact(str(bs_path))
+        except Exception as e:
+            log.warning("Не удалось залогировать baseline_stats артефакт: %s", e)
 
         # Тестовая оценка (до регистрации в MLflow Registry)
         if best_model is ModelKind.distilbert:
@@ -782,7 +781,7 @@ def run():
                 )
 
                 # Если метрики хорошие, переводим в Production
-                if test_metrics.get("f1_macro", 0) >= 0.85:
+                if test_metrics.get("f1_macro", 0) >= MODEL_PRODUCTION_THRESHOLD:
                     # Архивируем старые Production версии
                     client.transition_model_version_stage(
                         name=model_name,
@@ -791,17 +790,19 @@ def run():
                         archive_existing_versions=True,
                     )
                     log.info(
-                        "Модель %s версия %s переведена в Production (F1=%.4f >= 0.85)",
+                        "Модель %s версия %s переведена в Production (F1=%.4f >= %.2f)",
                         model_name,
                         latest_version,
                         test_metrics.get("f1_macro", 0),
+                        MODEL_PRODUCTION_THRESHOLD,
                     )
                 else:
                     log.warning(
-                        "Модель %s версия %s остаётся в Staging (F1=%.4f < 0.85)",
+                        "Модель %s версия %s остаётся в Staging (F1=%.4f < %.2f)",
                         model_name,
                         latest_version,
                         test_metrics.get("f1_macro", 0),
+                        MODEL_PRODUCTION_THRESHOLD,
                     )
         except Exception as e:
             log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)

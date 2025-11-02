@@ -131,7 +131,9 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
 
         best_val_loss = float("inf")
         patience_counter = 0
-        patience = 2  # Ранняя остановка после 2 эпох без улучшения
+
+        from scripts.config import DISTILBERT_EARLY_STOP_PATIENCE
+        patience = DISTILBERT_EARLY_STOP_PATIENCE
 
         for epoch in range(self.epochs):
             self._head.train()

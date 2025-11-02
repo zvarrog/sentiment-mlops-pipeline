@@ -6,65 +6,19 @@
 
 from datetime import datetime
 
-try:
-    from airflow.decorators import task
-    from airflow.models import TaskInstance
-    from airflow.operators.python import BranchPythonOperator, PythonOperator
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.decorators import task
+from airflow.models import TaskInstance
+from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 
-    from airflow import DAG
-
-    AIRFLOW_AVAILABLE = True
-except ImportError:
-
-    class _Dummy:
-        def __init__(self, *_, **__):
-            self.task_id = "dummy"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def __rshift__(self, other):
-            return other
-
-        def __lshift__(self, other):
-            return other
-
-    class DAG(_Dummy):
-        pass
-
-    class PythonOperator(_Dummy):
-        pass
-
-    class BranchPythonOperator(_Dummy):
-        pass
-
-    class TaskInstance:
-        pass
-
-    class PostgresHook:
-        def __init__(self, *_, **__):
-            pass
-
-    # Простейший декоратор-заглушка для @task, чтобы модуль импортировался вне Airflow
-    def task(*_args, **_kwargs):
-        def _wrap(fn):
-            return fn
-
-        return _wrap
-
-    AIRFLOW_AVAILABLE = False
-
+from airflow import DAG
 
 _DOC = """Пайплайн для обработки и обучения модели на Kindle отзывах.
 
 Режимы работы (параметр execution_mode):
 - standard: базовый режим с Optuna оптимизацией (по умолчанию)
 - monitored: + логирование метрик задач в PostgreSQL
-- parallel: параллельное обучение моделей (logreg, rf, hist_gb) и выбор лучшей
+- parallel: параллельное обучение моделей и выбор лучшей
 
 Управление через параметры DAG:
 - execution_mode: режим выполнения (standard/monitored/parallel)
@@ -80,7 +34,6 @@ default_args = {
 }
 
 
-# Utility functions
 def _to_bool(x, default: bool = False) -> bool:
     if x is None:
         return bool(default)
@@ -94,32 +47,36 @@ def _to_bool(x, default: bool = False) -> bool:
 
 
 def _get_value(context, name: str, default: str | None = None) -> str:
-    try:
-        dr = context.get("dag_run") if context else None
-        if dr and getattr(dr, "conf", None) is not None and name in dr.conf:
-            val = dr.conf.get(name)
-            if isinstance(val, (str, int, float)):
-                return str(val)
-    except Exception:
-        pass
+    """Получить строковый параметр запуска.
 
+    Порядок источников:
+    1) context['params'] — если доступен (UI/CLI override, где поддерживается)
+    2) context['dag_run'].conf — значения запуска из формы UI/CLI
+    3) dag.params — дефолтные параметры DAG
+    4) default — значение по умолчанию из вызова
+    """
+    params = context.get("params") or {}
+    if name in params:
+        return str(params.get(name))
+    dag_run = context.get("dag_run")
+    if getattr(dag_run, "conf", None) and name in dag_run.conf:
+        return str(dag_run.conf.get(name))
     dag = context.get("dag")
-    if dag and name in dag.params:
-        val = dag.params.get(name)
-        return str(val)
+    if dag and name in getattr(dag, "params", {}):
+        return str(dag.params.get(name))
     return str(default or "")
 
 
 def _get_flag(context, name: str, default: bool = False) -> bool:
-    try:
-        dr = context.get("dag_run")
-        if dr and getattr(dr, "conf", None) is not None and name in dr.conf:
-            return _to_bool(dr.conf.get(name), default)
-    except Exception:
-        pass
-
+    """Получить булев флаг запуска с тем же порядком источников."""
+    params = context.get("params") or {}
+    if name in params:
+        return _to_bool(params.get(name), default)
+    dag_run = context.get("dag_run")
+    if getattr(dag_run, "conf", None) and name in dag_run.conf:
+        return _to_bool(dag_run.conf.get(name), default)
     dag = context.get("dag")
-    if dag and name in dag.params:
+    if dag and name in getattr(dag, "params", {}):
         return _to_bool(dag.params.get(name), default)
     return bool(default)
 
@@ -157,6 +114,9 @@ def _setup_env(**context):
     os.environ["FORCE_DOWNLOAD"] = str(int(_get_flag(context, "force_download", False)))
     os.environ["FORCE_PROCESS"] = str(int(_get_flag(context, "force_process", False)))
     os.environ["FORCE_TRAIN"] = str(int(_get_flag(context, "force_train", False)))
+    os.environ["KEEP_CANDIDATES"] = str(
+        int(_get_flag(context, "keep_candidates", False))
+    )
     os.environ["INJECT_SYNTHETIC_DRIFT"] = str(
         int(_get_flag(context, "inject_synthetic_drift", False))
     )
@@ -283,32 +243,27 @@ def _task_inject_drift(**context):
 
     log = setup_auto_logging()
 
-    try:
-        from scripts.drift_injection import main as inject_main
+    from scripts.drift_injection import main as inject_main
 
-        result = inject_main()
-        if result.get("status") in ["skipped", "no_changes"]:
-            return result
-        elif result.get("status") == "error":
-            raise RuntimeError(f"Drift injection failed: {result.get('message')}")
-
+    result = inject_main()
+    if result.get("status") in ["skipped", "no_changes"]:
         return result
-    except ImportError as e:
-        log.warning("Модуль drift_injection недоступен: %s", e)
-        return {
-            "status": "module_unavailable",
-            "message": str(e),
-            "changed_columns": [],
-        }
+    if result.get("status") == "error":
+        raise RuntimeError(f"Drift injection failed: {result.get('message')}")
+
+    return result
 
 
 def _task_process(**context):
     _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
-    from scripts.spark_process import TEST_PATH, TRAIN_PATH, VAL_PATH
+    from scripts.spark_process import TEST_PATH, TRAIN_PATH, VAL_PATH, process_data
 
     log = setup_auto_logging()
     log.info("Обработка данных через Spark")
+
+    # Явно запускаем обработку
+    process_data()
 
     return {"train": str(TRAIN_PATH), "val": str(VAL_PATH), "test": str(TEST_PATH)}
 
@@ -370,10 +325,6 @@ def _task_train_standard(**context):
     log.info("Обучение модели (standard режим)")
 
     run()
-
-    execution_mode = _get_value(context, "execution_mode", "standard")
-    if execution_mode == "monitored":
-        _log_model_metrics_to_db(**context)
 
     log.info("Обучение завершено")
     return "training_complete"
@@ -443,9 +394,12 @@ def _train_model_parallel(model_kind: str, **context):
     import joblib
     import mlflow
     import optuna
+    from mlflow.exceptions import MlflowException
+    from mlflow.tracking import MlflowClient
 
     # Единый источник настроек — scripts.config (SSoT)
     from scripts.config import (
+        MLFLOW_TRACKING_URI,
         MODEL_ARTEFACTS_DIR,
         OPTUNA_N_TRIALS,
         OPTUNA_STORAGE,
@@ -459,12 +413,28 @@ def _train_model_parallel(model_kind: str, **context):
     log = setup_auto_logging()
     log.info(f"Обучение модели: {model_kind}")
 
-    X_train, X_val, X_test, y_train, y_val, y_test = load_splits()
+    x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
 
     model_enum = ModelKind(model_kind)
     study_name = f"parallel_{model_kind}_{int(time.time())}"
 
-    mlflow.set_experiment("kindle_parallel_experiment")
+    # Безопасная инициализация эксперимента MLflow (не падаем, если уже существует)
+    exp_name = "kindle_parallel_experiment"
+    try:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        client = MlflowClient()
+        existing = client.get_experiment_by_name(exp_name)
+        if existing is None:
+            try:
+                client.create_experiment(exp_name)
+            except MlflowException as e:
+                # В редких кейсах гонки два воркера могут создать эксперимент одновременно
+                if "already exists" not in str(e).lower():
+                    raise
+        mlflow.set_experiment(exp_name)
+    except Exception as e:
+        log.warning(f"Не удалось инициализировать MLflow эксперимент: {e}")
+        raise
 
     with mlflow.start_run(run_name=f"train_{model_kind}"):
         mlflow.log_param("model", model_kind)
@@ -477,7 +447,7 @@ def _train_model_parallel(model_kind: str, **context):
         )
 
         def opt_obj(trial):
-            return objective(trial, model_enum, X_train, y_train, X_val, y_val)
+            return objective(trial, model_enum, x_train, y_train, x_val, y_val)
 
         n_trials = min(OPTUNA_N_TRIALS, 10)
         study.optimize(opt_obj, n_trials=n_trials, timeout=300, show_progress_bar=False)
@@ -489,16 +459,22 @@ def _train_model_parallel(model_kind: str, **context):
 
         fixed_trial = optuna.trial.FixedTrial(best_params)
         fixed_trial.set_user_attr(
-            "numeric_cols", [c for c in NUMERIC_COLS if c in X_train.columns]
+            "numeric_cols", [c for c in NUMERIC_COLS if c in x_train.columns]
         )
 
         pipeline = build_pipeline(fixed_trial, model_enum)
-        pipeline.fit(X_train, y_train)
 
-        val_preds = pipeline.predict(X_val)
+        # DistilBERT работает только с текстом, остальные модели — с полным DataFrame
+        if model_enum == ModelKind.distilbert:
+            pipeline.fit(x_train["reviewText"], y_train)
+            val_preds = pipeline.predict(x_val["reviewText"])
+            test_preds = pipeline.predict(x_test["reviewText"])
+        else:
+            pipeline.fit(x_train, y_train)
+            val_preds = pipeline.predict(x_val)
+            test_preds = pipeline.predict(x_test)
+
         val_metrics = compute_metrics(y_val, val_preds)
-
-        test_preds = pipeline.predict(X_test)
         test_metrics = compute_metrics(y_test, test_preds)
 
         mlflow.log_metrics({f"val_{k}": v for k, v in val_metrics.items()})
@@ -543,7 +519,11 @@ def train_one(model_kind: str, **context):
 def select_best(results: list[dict], **context):
     """Выбирает лучшую модель из результатов динамически обученных моделей."""
     _setup_env(**context)
+    import contextlib
+    import json
+    import os
     import shutil
+    from datetime import datetime
     from pathlib import Path
 
     # Единый источник путей — scripts.config (SSoT)
@@ -566,57 +546,90 @@ def select_best(results: list[dict], **context):
 
     src_model = Path(best["model_path"]) if best.get("model_path") else None
     if src_model and src_model.exists():
-        shutil.copy2(src_model, best_model_path)
+        try:
+            # Пытаемся сохранить метаданные; на некоторых FS (в т.ч. overlay) это запрещено
+            shutil.copy2(src_model, best_model_path)
+        except PermissionError:
+            shutil.copyfile(src_model, best_model_path)
+        except OSError as e:
+            log.warning(f"copy2 не удался: {e}; пробую copyfile")
+            shutil.copyfile(src_model, best_model_path)
         log.info(f"Лучшая модель скопирована в {best_model_path}")
 
-    best_meta_path = Path(MODEL_ARTEFACTS_DIR) / "best_model_meta.json"
-    src_meta = Path(best["meta_path"]) if best.get("meta_path") else None
-    if src_meta and src_meta.exists():
-        shutil.copy2(src_meta, best_meta_path)
+    # Пересобираем best_model_meta.json в унифицированном формате как в train.run
+    # best_model_meta.json формируется в процессе постпроцессинга модуля postprocessing
+
+    # Загрузка данных и модели для постпроцессинга
+    try:
+        from scripts.postprocessing import generate_best_bundle
+        from scripts.train_modules.data_loading import load_splits
+
+        x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
+
+        # Читаем best_params из исходного meta_{kind}.json
+        src_meta = Path(best.get("meta_path", ""))
+        best_params = {}
+        if src_meta and src_meta.exists():
+            with open(src_meta, encoding="utf-8") as f:
+                _meta_raw = json.load(f)
+                best_params = _meta_raw.get("best_params", {})
+
+        generate_best_bundle(
+            best_model=str(best["model"]),
+            best_params=best_params,
+            best_val_f1_macro=float(best.get("val_f1_macro", 0.0)),
+            pipeline_path=best_model_path,
+            x_train=x_train,
+            x_val=x_val,
+            x_test=x_test,
+            y_train=y_train,
+            y_val=y_val,
+            y_test=y_test,
+            artefacts_dir=Path(MODEL_ARTEFACTS_DIR),
+        )
+    except Exception as e:
+        log.warning(f"Постпроцессинг лучшей модели частично пропущен: {e}")
+
+    # Обработка кандидатов по флагу KEEP_CANDIDATES
+    try:
+        keep = os.environ.get("KEEP_CANDIDATES", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        arte_dir = Path(MODEL_ARTEFACTS_DIR)
+        best_kind = str(best["model"]).strip()
+        model_files = list(arte_dir.glob("model_*.joblib"))
+        meta_files = list(arte_dir.glob("meta_*.json"))
+        to_affect = []
+        for p in model_files + meta_files:
+            name = p.name
+            if name.startswith("model_") and name != f"model_{best_kind}.joblib":
+                to_affect.append(p)
+            if name.startswith("meta_") and name != f"meta_{best_kind}.json":
+                to_affect.append(p)
+
+        if to_affect:
+            if keep:
+                dst_root = (
+                    arte_dir
+                    / "candidates"
+                    / datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                )
+                dst_root.mkdir(parents=True, exist_ok=True)
+                for p in to_affect:
+                    shutil.move(str(p), str(dst_root / p.name))
+                log.info(f"Кандидаты перемещены в {dst_root}")
+            else:
+                for p in to_affect:
+                    with contextlib.suppress(Exception):
+                        p.unlink()
+                log.info("Лишние кандидаты удалены (KEEP_CANDIDATES=0)")
+    except Exception as e:
+        log.warning(f"Не удалось обработать кандидатные артефакты: {e}")
 
     log.info("Выбор лучшей модели завершен")
-    return best
-
-
-def _task_select_best(**context):
-    """Fallback-функция выбора лучшей модели для режима без Airflow mapping."""
-    _setup_env(**context)
-    import shutil
-    from pathlib import Path
-
-    from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
-    from scripts.logging_config import setup_auto_logging
-
-    log = setup_auto_logging()
-    log.info("Выбор лучшей модели (fallback)")
-
-    ti = context["ti"]
-    results = []
-    for task_id in ["train_logreg", "train_rf", "train_gb"]:
-        try:
-            result = ti.xcom_pull(task_ids=task_id)
-            if result and result.get("val_f1_macro"):
-                results.append(result)
-        except Exception as e:
-            log.warning(f"Не удалось получить результат от {task_id}: {e}")
-
-    if not results:
-        raise ValueError("Ни одна модель не была успешно обучена")
-
-    best = max(results, key=lambda x: x.get("val_f1_macro", 0.0))
-    MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
-    best_model_path = MODEL_FILE_DIR / "best_model.joblib"
-
-    src_model = Path(best["model_path"]) if best.get("model_path") else None
-    if src_model and src_model.exists():
-        shutil.copy2(src_model, best_model_path)
-
-    best_meta_path = Path(MODEL_ARTEFACTS_DIR) / "best_model_meta.json"
-    src_meta = Path(best["meta_path"]) if best.get("meta_path") else None
-    if src_meta and src_meta.exists():
-        shutil.copy2(src_meta, best_meta_path)
-
-    log.info("Выбор лучшей модели завершен (fallback)")
     return best
 
 
@@ -629,7 +642,9 @@ with DAG(
     description=_DOC,
     tags=["sentiment", "ml", "unified"],
     params={
-        "execution_mode": "standard",
+        # Флаг параллельного обучения (UI-параметр)
+        "parallel": False,
+        "keep_candidates": False,
         "force_download": False,
         "force_process": False,
         "force_train": False,
@@ -684,43 +699,35 @@ with DAG(
         python_callable=_task_train_standard,
     )
 
-    # Динамическая генерация заданий обучения на основе SELECTED_MODEL_KINDS (если доступен Airflow)
-    if AIRFLOW_AVAILABLE:
-        try:
-            from scripts.config import SELECTED_MODEL_KINDS
+    # Динамическая генерация заданий обучения на основе SELECTED_MODEL_KINDS
+    from scripts.config import SELECTED_MODEL_KINDS
 
-            _MODEL_KINDS = [mk.value for mk in SELECTED_MODEL_KINDS]
-        except Exception:
-            _MODEL_KINDS = ["logreg", "rf", "hist_gb"]
-
-        train_results = train_one.expand(model_kind=_MODEL_KINDS)  # type: ignore[attr-defined]
-        select_best_task = select_best(train_results)  # type: ignore[call-arg]
-        _parallel_branch_targets = ["train_one"]
-    else:
-        # Fallback: три статические задачи, параллельные при наличии исполнителя
-        train_logreg = PythonOperator(
-            task_id="train_logreg",
-            python_callable=lambda **ctx: _train_model_parallel("logreg", **ctx),
-        )
-        train_rf = PythonOperator(
-            task_id="train_rf",
-            python_callable=lambda **ctx: _train_model_parallel("rf", **ctx),
-        )
-        train_gb = PythonOperator(
-            task_id="train_gb",
-            python_callable=lambda **ctx: _train_model_parallel("hist_gb", **ctx),
-        )
-        select_best_task = PythonOperator(
-            task_id="select_best",
-            python_callable=_task_select_best,
-        )
-        _parallel_branch_targets = ["train_logreg", "train_rf", "train_gb"]
+    _MODEL_KINDS = [mk.value for mk in SELECTED_MODEL_KINDS]
+    train_results = train_one.expand(model_kind=_MODEL_KINDS)  # type: ignore[attr-defined]
+    select_best_task = select_best(train_results)  # type: ignore[call-arg]
+    _parallel_branch_targets = ["train_one"]
 
     def _branch_by_mode(**context):
-        """Ветвление по режиму выполнения."""
-        mode = _get_value(context, "execution_mode", "standard")
-        if mode == "parallel":
-            # Для Airflow возвращаем id маппинг‑задачи; для fallback — список статических задач
+        """Ветвление по режиму выполнения.
+
+        Приоритет выбора параллельности:
+        1) UI-параметр DAG: params.parallel (bool)
+        2) Переменная окружения PARALLEL (bool: "1"|"true"|...)
+        3) Значение по умолчанию: standard
+        """
+        import os
+
+        from scripts.logging_config import setup_auto_logging
+
+        parallel_flag = _get_flag(context, "parallel", False)
+        if not parallel_flag:
+            parallel_env = os.getenv("PARALLEL", "0").strip()
+            parallel_flag = parallel_env.lower() in {"1", "true", "yes", "on"}
+
+        log = setup_auto_logging()
+        log.info("Выбран режим: %s", "parallel" if parallel_flag else "standard")
+
+        if parallel_flag:
             return _parallel_branch_targets
         return ["train_standard"]
 
@@ -734,9 +741,6 @@ with DAG(
 
     # Ветви обучения
     branch >> train_standard
-    # В параллельном режиме: либо динамический маппинг, либо fallback из трёх задач
-    if AIRFLOW_AVAILABLE:
-        branch >> train_results  # type: ignore[operator]
-        train_results >> select_best_task  # type: ignore[operator]
-    else:
-        branch >> [train_logreg, train_rf, train_gb] >> select_best_task
+    # В параллельном режиме используем динамический маппинг
+    branch >> train_results  # type: ignore[operator]
+    train_results >> select_best_task  # type: ignore[operator]

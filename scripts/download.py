@@ -7,8 +7,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 
-from scripts.config import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
-
+from .config import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
 from .logging_config import setup_auto_logging
 from .retry_utils import retry_with_backoff
 
@@ -56,7 +55,7 @@ def _download_with_retry() -> None:
 
 
 def main() -> Path:
-    """Основная процедура скачивания датасета Kaggle с логированием.
+    """Основная процедура скачивания датасета Kaggle.
 
     Возвращает абсолютный путь к CSV.
     """

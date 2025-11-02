@@ -49,6 +49,21 @@ def trace_context(trace_id: str):
         _trace_id_var.reset(token)
 
 
+def set_trace_id(trace_id: str) -> None:
+    """Установить trace_id в текущем контексте."""
+    _trace_id_var.set(trace_id)
+
+
+def get_trace_id() -> str | None:
+    """Получить текущий trace_id."""
+    return _trace_id_var.get()
+
+
+def clear_trace_id() -> None:
+    """Очистить trace_id в текущем контексте."""
+    _trace_id_var.set(None)
+
+
 def get_logging_config(
     level: str = "INFO",
     log_file: str | None = None,
@@ -148,3 +163,23 @@ def get_logger(name: str = "kindle") -> logging.Logger:
     if not root_logger.handlers:
         setup_logging()
     return logging.getLogger(name)
+
+
+def setup_auto_logging(
+    level: str = "INFO",
+    log_file: str | None = None,
+    log_format: str = "text",
+) -> logging.Logger:
+    """Настроить логирование и вернуть логгер для API/сервисов."""
+    return setup_logging(level=level, log_file=log_file, log_format=log_format)
+
+
+def setup_training_logging(
+    level: str = "INFO",
+    log_file: str | None = None,
+) -> logging.Logger:
+    """Настроить логирование для обучения моделей (train.py).
+
+    Используется для инициализации логирования перед запуском training.
+    """
+    return setup_logging(level=level, log_file=log_file, log_format="text")

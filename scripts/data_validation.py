@@ -58,6 +58,15 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "item_avg_len",
         "rawFeatures",
         "tfidfFeatures",  # Spark vector колонки
+        # Новые колонки из расширенных фич
+        "question_count",
+        "helpful",
+        "sentiment_category",
+        "exclamation_count",
+        "reviewerName",
+        "summary",
+        "sentiment_strength",
+        "caps_ratio",
     },
     column_types={
         "reviewText": "object",

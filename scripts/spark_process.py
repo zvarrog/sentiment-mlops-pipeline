@@ -14,6 +14,7 @@ from pyspark import StorageLevel
 from pyspark.ml.feature import IDF, CountVectorizer, Tokenizer
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
+    abs,
     avg,
     col,
     count,
@@ -53,17 +54,33 @@ TEST_PATH = PROCESSED_DATA_DIR / "test.parquet"
 
 log = setup_auto_logging()
 
-if (
-    not FORCE_PROCESS
-    and TRAIN_PATH.exists()
-    and VAL_PATH.exists()
-    and TEST_PATH.exists()
-):
-    log.warning(
-        "Обработанные данные уже существуют в %s. Для форсированной обработки установите флаг FORCE_PROCESS = True.",
-        str(PROCESSED_DATA_DIR),
-    )
-else:
+
+def process_data() -> None:
+    """Основная функция обработки данных Spark.
+
+    Выполняет:
+    - Загрузку CSV
+    - Очистку и нормализацию текста
+    - Балансировку по классам
+    - Добавление признаков
+    - Sentiment анализ
+    - TF-IDF векторизацию
+    - Сохранение в parquet
+
+    Вызывается только на driver, никогда на worker-ах.
+    """
+    if (
+        not FORCE_PROCESS
+        and TRAIN_PATH.exists()
+        and VAL_PATH.exists()
+        and TEST_PATH.exists()
+    ):
+        log.warning(
+            "Обработанные данные уже существуют в %s. Для форсированной обработки установите флаг FORCE_PROCESS = True.",
+            str(PROCESSED_DATA_DIR),
+        )
+        return
+
     # Создаём SparkSession (если скрипт запускается сам по себе)
     try:
         spark = (
@@ -103,80 +120,24 @@ else:
         multiLine=True,
     )
 
-    # Устойчивое удаление искусственного индексного столбца (leading comma / _c0 / BOM)
-    first_col = df.columns[0]
-    # нормализуем имя: убираем BOM и пробелы
-    if isinstance(first_col, str):
-        cleaned = first_col.strip()
-        if cleaned.startswith("\ufeff"):
-            cleaned = cleaned.lstrip("\ufeff")
-    else:
-        cleaned = first_col
-
-    expected_cols = [
-        "asin",
-        "helpful",
-        "overall",
-        "reviewText",
-        "reviewTime",
-        "reviewerID",
-        "reviewerName",
-        "summary",
-        "unixReviewTime",
-    ]
-
-    should_drop = False
-    # явно пустое имя или стандартное имя парсера
-    if (
-        cleaned in ("", "_c0")
-        or len(df.columns) == len(expected_cols) + 1
-        and cleaned not in expected_cols
-    ):
-        should_drop = True
-
-    if should_drop:
-        log.info("Удаление индексного столбца: raw=%r cleaned=%r", first_col, cleaned)
-        df = df.drop(first_col)
-        log.info("Новый header: %s", ", ".join(df.columns))
-    else:
-        log.info(
-            "Первый столбец валидный (raw=%r cleaned=%r) — пропускаю удаление",
-            first_col,
-            cleaned,
-        )
-
-    # Оставляем только нужные колонки
-    cols = [
-        "reviewerID",
-        "asin",
-        "reviewText",
-        "overall",
-        "unixReviewTime",
-        "reviewTime",
-    ]
-    df = df.select(*cols)
-    # Легкая очистка текста (truncate, lower, normalize symbols, remove html/url/non-latin, collapse spaces)
+    # Легкая очистка текста: truncate → lower → normalize → remove html/url/non-latin → collapse spaces
     MAX_TEXT_CHARS = 2000
-    text_expr = lower(substring(col("reviewText"), 1, MAX_TEXT_CHARS))
-    # Удаляем невидимые пробелы/марки: zero-width space, BOM, NBSP
-    text_expr = regexp_replace(text_expr, r"[\u200b\ufeff\u00A0]", " ")
-    # Убираем HTML/URL
-    text_expr = regexp_replace(text_expr, r"<[^>]+>", " ")
-    text_expr = regexp_replace(text_expr, r"http\S+", " ")
-    # Нормализация типографских кавычек и тире
-    text_expr = regexp_replace(text_expr, r"[\u2018\u2019]", "'")
-    text_expr = regexp_replace(text_expr, r"[\u201C\u201D]", '"')
-    text_expr = regexp_replace(text_expr, r"[\u2013\u2014]", "-")
-    # Убираем типичные Kindle/ebook-метки, не несущие смысловой нагрузки
-    text_expr = regexp_replace(
-        text_expr,
+    text_col = lower(substring(col("reviewText"), 1, MAX_TEXT_CHARS))
+    # Цепь regexp_replace для текстовой очистки
+    text_col = regexp_replace(text_col, r"[\u200b\ufeff\u00A0]", " ")  # невидимые пробелы
+    text_col = regexp_replace(text_col, r"<[^>]+>", " ")  # HTML
+    text_col = regexp_replace(text_col, r"http\S+", " ")  # URL
+    text_col = regexp_replace(text_col, r"[\u2018\u2019]", "'")  # умные кавычки
+    text_col = regexp_replace(text_col, r"[\u201C\u201D]", '"')
+    text_col = regexp_replace(text_col, r"[\u2013\u2014]", "-")  # em-dash
+    text_col = regexp_replace(
+        text_col,
         r"\b(kindle edition|prime reading|whispersync|borrow(?:ed)? for free|free sample|look inside)\b",
         " ",
-    )
-    # Только латиница и пробелы, схлопывание пробелов
-    text_expr = regexp_replace(text_expr, r"[^a-z ]", " ")
-    text_expr = regexp_replace(text_expr, r"\s+", " ")
-    df = df.withColumn("reviewText", text_expr)
+    )  # ebook-метки
+    text_col = regexp_replace(text_col, r"[^a-z ]", " ")  # только латиница
+    text_col = regexp_replace(text_col, r"\s+", " ")  # collapse spaces
+    df = df.withColumn("reviewText", text_col)
 
     # Чистим данные: валидные тексты и оценки
     clean = df.filter((col("reviewText").isNotNull()) & (col("overall").isNotNull()))
@@ -194,49 +155,52 @@ else:
         "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, balanced_count
     )
 
-    clean = clean.withColumn("text_len", length(col("reviewText")))
-    clean = clean.withColumn("word_count", size(split(col("reviewText"), " ")))
-    # Частота слова 'kindle' в отзыве
-    clean = clean.withColumn(
-        "kindle_freq", size(split(lower(col("reviewText")), "kindle")) - 1
+    # Кэшируем после дорогой балансировки
+    clean = clean.persist(StorageLevel.MEMORY_AND_DISK)
+
+    # Батчируем добавление признаков в один .select() вместо цепи .withColumn()
+    clean = clean.select(
+        "*",
+        length(col("reviewText")).alias("text_len"),
+        size(split(col("reviewText"), " ")).alias("word_count"),
+        (size(split(lower(col("reviewText")), "kindle")) - 1).alias("kindle_freq"),
+        (size(split(col("reviewText"), "!")) - 1).alias("exclamation_count"),
+        (
+            length(regexp_replace(col("reviewText"), "[^A-Z]", ""))
+            / greatest(length(col("reviewText")), lit(1))
+        ).alias("caps_ratio"),
+        (size(split(col("reviewText"), "\\?")) - 1).alias("question_count"),
     )
 
-    # Дополнительные информативные признаки
-    clean = clean.withColumn(
-        "exclamation_count", size(split(col("reviewText"), "!")) - 1
-    )
-    clean = clean.withColumn(
-        "caps_ratio",
-        length(regexp_replace(col("reviewText"), "[^A-Z]", ""))
-        / greatest(length(col("reviewText")), lit(1)),
-    )
-    clean = clean.withColumn(
-        "question_count", size(split(col("reviewText"), "\\?")) - 1
-    )
+    # Добавляем производную колонку avg_word_length после того как есть text_len и word_count
     clean = clean.withColumn(
         "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
     )
 
-    # Sentiment анализ с TextBlob для более точных результатов
+    # Sentiment анализ с TextBlob — UDF должен быть stateless (без SparkSession)
     from pyspark.sql.functions import udf
     from pyspark.sql.types import FloatType
 
-    def calculate_sentiment_textblob(text):
+    def calculate_sentiment_textblob(text: str) -> float:
         """Вычисляет sentiment score с помощью TextBlob.
 
         Возвращает polarity от -1 (негативный) до +1 (позитивный).
         Использует встроенные модели и словари TextBlob.
+
+        Эта функция запускается на worker-ах Spark,
+        поэтому НЕ должна создавать SparkSession или зависеть от внешних ресурсов.
         """
         if not text or len(text.strip()) < 3:
             return 0.0
 
-        from textblob import TextBlob
-
-        blob = TextBlob(text)
-        polarity = blob.sentiment.polarity
-
-        # Ограничиваем диапазон и округляем для стабильности
-        return float(max(-1.0, min(1.0, round(polarity, 4))))
+        try:
+            from textblob import TextBlob
+            blob = TextBlob(text)
+            polarity = blob.sentiment.polarity
+            return float(max(-1.0, min(1.0, round(polarity, 4))))
+        except Exception:
+            # На случай ошибки парсинга — возвращаем нейтральный sentiment
+            return 0.0
 
     # Регистрируем UDF для sentiment анализа
     sentiment_udf = udf(calculate_sentiment_textblob, FloatType())
@@ -252,8 +216,8 @@ else:
     )
     clean = clean.withColumn(
         "sentiment_strength",
-        when(col("sentiment").abs() > 0.5, "strong")
-        .when(col("sentiment").abs() > 0.2, "moderate")
+        when(abs(col("sentiment")) > 0.5, "strong")
+        .when(abs(col("sentiment")) > 0.2, "moderate")
         .otherwise("weak"),
     )
 
@@ -268,7 +232,7 @@ else:
         tr_c + v_c + te_c,
     )
 
-    # TF-IDF: фитим векторизатор и IDF только на train и применяем к val/test тем же моделям
+    # TF-IDF: применяем векторизатор и IDF только на train и применяем к val/test тем же моделям
     tokenizer = Tokenizer(inputCol="reviewText", outputCol="words")
     vectorizer = CountVectorizer(
         inputCol="words",
@@ -308,13 +272,14 @@ else:
         user_stats = train.groupBy("reviewerID").agg(
             avg("text_len").alias("user_avg_len"),
             count("reviewText").alias("user_review_count"),
-        )
+        ).persist(StorageLevel.MEMORY_AND_DISK)
+
         item_stats = train.groupBy("asin").agg(
             avg("text_len").alias("item_avg_len"),
             count("reviewText").alias("item_review_count"),
-        )
+        ).persist(StorageLevel.MEMORY_AND_DISK)
 
-        # Присоединяем агрегаты к каждому датасету
+        # Батчируем join для всех выборок
         train = train.join(user_stats, on="reviewerID", how="left").join(
             item_stats, on="asin", how="left"
         )
@@ -329,7 +294,6 @@ else:
             "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
         )
 
-        # Сохраняем данные (путь должен быть строкой для Py4J/Java)
         train.write.mode("overwrite").parquet(str(TRAIN_PATH))
         val.write.mode("overwrite").parquet(str(VAL_PATH))
         test.write.mode("overwrite").parquet(str(TEST_PATH))
@@ -337,6 +301,12 @@ else:
         train.unpersist()
         val.unpersist()
         test.unpersist()
+        # Очищаем кэши агрегатов (если переменные определены)
+        try:
+            user_stats.unpersist()
+            item_stats.unpersist()
+        except Exception:
+            pass
 
     log.info(
         "Данные сохранены в %s",
@@ -384,3 +354,7 @@ else:
             sc._gateway.close()
     except Exception as _e:
         log.debug("Не удалось закрыть Py4J gateway: %s", _e)
+
+
+if __name__ == "__main__":
+    process_data()

@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pydantic>=2
+pydantic-settings==2.6.1
 python-dotenv==1.0.1
 gunicorn
 slowapi==0.1.9
@@ -10,6 +11,7 @@ joblib==1.4.2
 requests==2.32.3
 pyarrow==15.0.0
 fastparquet==2024.11.0
+prometheus-client==0.20.0
 
 # Для десериализации моделей, сохранённых с использованием dill/cloudpickle
 dill==0.3.8
