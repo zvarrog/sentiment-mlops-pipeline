@@ -1,0 +1,202 @@
+[
+  {
+    "feature": "sentiment",
+    "importance": 0.07291966593406993
+  },
+  {
+    "feature": "svd_1[story,read,book...]",
+    "importance": 0.04897155901807464
+  },
+  {
+    "feature": "svd_3[like,loved,great...]",
+    "importance": 0.043119974592173135
+  },
+  {
+    "feature": "svd_5[love,great,book...]",
+    "importance": 0.028525473765114998
+  },
+  {
+    "feature": "text_len",
+    "importance": 0.025356883033214435
+  },
+  {
+    "feature": "word_count",
+    "importance": 0.02318887001074898
+  },
+  {
+    "feature": "svd_12[sex,books,series...]",
+    "importance": 0.02282935793762487
+  },
+  {
+    "feature": "user_avg_len",
+    "importance": 0.022588823947938447
+  },
+  {
+    "feature": "svd_11[just,writing,interesting...]",
+    "importance": 0.022413662325588595
+  },
+  {
+    "feature": "svd_26[don,ending,stories...]",
+    "importance": 0.02155335506974231
+  },
+  {
+    "feature": "svd_9[stories,loved,boring...]",
+    "importance": 0.020968821693107657
+  },
+  {
+    "feature": "svd_16[series,stories,really...]",
+    "importance": 0.020947902084635588
+  },
+  {
+    "feature": "svd_0[book,story,read...]",
+    "importance": 0.02086508051756108
+  },
+  {
+    "feature": "svd_2[read,book,story...]",
+    "importance": 0.02081796457841866
+  },
+  {
+    "feature": "svd_23[cute,quick,quick read...]",
+    "importance": 0.020680876420388628
+  },
+  {
+    "feature": "svd_37[lot,time,author...]",
+    "importance": 0.020109474055128595
+  },
+  {
+    "feature": "avg_word_length",
+    "importance": 0.019987847757127288
+  },
+  {
+    "feature": "svd_22[don,finish,interesting...]",
+    "importance": 0.019839099438169597
+  },
+  {
+    "feature": "svd_17[written,boring,great...]",
+    "importance": 0.01981874520960847
+  },
+  {
+    "feature": "svd_15[love,story,short...]",
+    "importance": 0.019814512341529294
+  },
+  {
+    "feature": "svd_13[writing,didn,boring...]",
+    "importance": 0.019534908424919013
+  },
+  {
+    "feature": "svd_14[boring,didn,author...]",
+    "importance": 0.019420634892773393
+  },
+  {
+    "feature": "svd_38[need,ve,hard...]",
+    "importance": 0.01924466925613774
+  },
+  {
+    "feature": "svd_19[written,need,really...]",
+    "importance": 0.01923011408564085
+  },
+  {
+    "feature": "svd_35[predictable,fun,cute...]",
+    "importance": 0.019184351037840337
+  },
+  {
+    "feature": "svd_28[reading,felt,finish...]",
+    "importance": 0.019026529663309505
+  },
+  {
+    "feature": "svd_34[couldn,enjoyed,liam...]",
+    "importance": 0.01898773994886892
+  },
+  {
+    "feature": "svd_30[couldn,loved,books...]",
+    "importance": 0.018377659999902398
+  },
+  {
+    "feature": "svd_27[characters,little,boring...]",
+    "importance": 0.018280833262557836
+  },
+  {
+    "feature": "svd_7[loved,really,good...]",
+    "importance": 0.01827835405620095
+  },
+  {
+    "feature": "svd_20[short,great,words...]",
+    "importance": 0.01818358237216316
+  },
+  {
+    "feature": "svd_24[writing,got,hard...]",
+    "importance": 0.01810549970717078
+  },
+  {
+    "feature": "svd_33[enjoy,did,author...]",
+    "importance": 0.01809676885976117
+  },
+  {
+    "feature": "svd_32[ve,need,time...]",
+    "importance": 0.017970594758045542
+  },
+  {
+    "feature": "svd_18[ending,love,did...]",
+    "importance": 0.01754726239144756
+  },
+  {
+    "feature": "svd_25[little,finish,use...]",
+    "importance": 0.017440986431783302
+  },
+  {
+    "feature": "svd_4[good,short,great...]",
+    "importance": 0.017019030428297097
+  },
+  {
+    "feature": "item_avg_len",
+    "importance": 0.016756685734561832
+  },
+  {
+    "feature": "svd_39[stop,hot,got...]",
+    "importance": 0.016659409867942714
+  },
+  {
+    "feature": "svd_31[way,recipes,ve...]",
+    "importance": 0.016539794170544707
+  },
+  {
+    "feature": "svd_21[ending,reading,got...]",
+    "importance": 0.016122473476092792
+  },
+  {
+    "feature": "svd_10[writing,just,don...]",
+    "importance": 0.015711432461939654
+  },
+  {
+    "feature": "svd_36[liam,need,follow...]",
+    "importance": 0.015552590268614325
+  },
+  {
+    "feature": "svd_29[love,little,need...]",
+    "importance": 0.015528420116859943
+  },
+  {
+    "feature": "svd_8[really,books,great...]",
+    "importance": 0.015122513624565322
+  },
+  {
+    "feature": "svd_6[loved,series,good...]",
+    "importance": 0.014861641101264946
+  },
+  {
+    "feature": "item_review_count",
+    "importance": 0.003947657375286715
+  },
+  {
+    "feature": "user_review_count",
+    "importance": 0.0037086027936125685
+  },
+  {
+    "feature": "kindle_freq",
+    "importance": 0.00024130970192992417
+  },
+  {
+    "feature": "question_count",
+    "importance": 0.0
+  }
+]

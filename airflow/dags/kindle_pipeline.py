@@ -203,22 +203,17 @@ def log_task_failure(**context):
             _log.warning(f"Не удалось залогировать ошибку задачи: {e}")
 
 
-# Task functions
+# Функции задачи
+
+
 def _task_download(**context):
     _setup_env(**context)
-    import os
 
-    from scripts.download import CSV_PATH
     from scripts.download import main as download_main
     from scripts.logging_config import setup_auto_logging
 
     log = setup_auto_logging()
     log.info("Загрузка данных из Kaggle")
-
-    force = os.environ.get("FORCE_DOWNLOAD", "0") == "1"
-    if not force and CSV_PATH.exists():
-        log.info("CSV уже существует: %s — пропуск", str(CSV_PATH))
-        return str(CSV_PATH.resolve())
 
     csv_abs = download_main()
     log.info("Данные загружены: %s", csv_abs)
@@ -262,7 +257,7 @@ def _task_inject_drift(**context):
     if result.get("status") in ["skipped", "no_changes"]:
         return result
     if result.get("status") == "error":
-        raise RuntimeError(f"Drift injection failed: {result.get('message')}")
+        raise RuntimeError(f"Ошибка инъекции дрейфа: {result.get('message')}")
 
     return result
 
@@ -431,7 +426,7 @@ def _train_model_parallel(model_kind: str, **context):
     model_enum = ModelKind(model_kind)
     study_name = f"parallel_{model_kind}_{int(time.time())}"
 
-    # Безопасная инициализация эксперимента MLflow (не падаем, если уже существует)
+    # Безопасная инициализация эксперимента MLflow
     exp_name = "kindle_parallel_experiment"
     try:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -441,7 +436,7 @@ def _train_model_parallel(model_kind: str, **context):
             try:
                 client.create_experiment(exp_name)
             except MlflowException as e:
-                # В редких кейсах гонки два воркера могут создать эксперимент одновременно
+                # Два воркера могут создать эксперимент одновременно
                 if "already exists" not in str(e).lower():
                     raise
         mlflow.set_experiment(exp_name)
@@ -560,7 +555,6 @@ def select_best(results: list[dict], **context):
     src_model = Path(best["model_path"]) if best.get("model_path") else None
     if src_model and src_model.exists():
         try:
-            # Пытаемся сохранить метаданные; на некоторых FS (в т.ч. overlay) это запрещено
             shutil.copy2(src_model, best_model_path)
         except PermissionError:
             shutil.copyfile(src_model, best_model_path)
@@ -568,9 +562,6 @@ def select_best(results: list[dict], **context):
             log.warning(f"copy2 не удался: {e}; пробую copyfile")
             shutil.copyfile(src_model, best_model_path)
         log.info(f"Лучшая модель скопирована в {best_model_path}")
-
-    # Пересобираем best_model_meta.json в унифицированном формате как в train.run
-    # best_model_meta.json формируется в процессе постпроцессинга модуля postprocessing
 
     # Загрузка данных и модели для постпроцессинга
     try:
@@ -646,7 +637,7 @@ def select_best(results: list[dict], **context):
     return best
 
 
-# DAG definition
+# Определение DAG
 with DAG(
     dag_id="kindle_unified_pipeline",
     default_args=default_args,
@@ -716,8 +707,8 @@ with DAG(
     from scripts.config import SELECTED_MODEL_KINDS
 
     _MODEL_KINDS = [mk.value for mk in SELECTED_MODEL_KINDS]
-    train_results = train_one.expand(model_kind=_MODEL_KINDS)  # type: ignore[attr-defined]
-    select_best_task = select_best(train_results)  # type: ignore[call-arg]
+    train_results = train_one.expand(model_kind=_MODEL_KINDS)
+    select_best_task = select_best(train_results)
     _parallel_branch_targets = ["train_one"]
 
     def _branch_by_mode(**context):
@@ -755,5 +746,5 @@ with DAG(
     # Ветви обучения
     branch >> train_standard
     # В параллельном режиме используем динамический маппинг
-    branch >> train_results  # type: ignore[operator]
-    train_results >> select_best_task  # type: ignore[operator]
+    branch >> train_results
+    train_results >> select_best_task

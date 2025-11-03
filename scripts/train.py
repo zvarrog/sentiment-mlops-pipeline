@@ -459,7 +459,9 @@ def run():
     best_path = MODEL_FILE_DIR / "best_model.joblib"
     best_meta_path = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
 
-    force_train = bool(int(os.environ.get("FORCE_TRAIN", "0")))
+    from scripts.config import FORCE_TRAIN
+
+    force_train = FORCE_TRAIN
     log.info("FORCE_TRAIN=%s, наличие best_model=%s", force_train, best_path.exists())
 
     old_model_metric = None
@@ -527,7 +529,7 @@ def run():
                 search_targets.extend(
                     [
                         (model_name, "lbfgs"),
-                        # (model_name, "liblinear"),
+                        (model_name, "liblinear"),
                         # (model_name, "saga"),  # Очень медленно сходится на больших данных
                     ]
                 )
@@ -958,7 +960,7 @@ def run():
                 y_score = final_pipeline.predict_proba(x_for_proba)
                 classes = sorted(set(y_test.tolist()))
                 y_true_bin = label_binarize(y_test, classes=classes)
-                # Защита: некоторые модели возвращают proba без последнего класса (редко) — проверим форму
+                # Защита: некоторые модели возвращают proba без последнего класса
                 if y_score.shape[1] != y_true_bin.shape[1]:
                     # Приведём к общему виду, заполняя недостающие классы нулями
                     import numpy as _np

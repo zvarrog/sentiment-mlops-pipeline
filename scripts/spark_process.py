@@ -33,7 +33,6 @@ from pyspark.sql.window import Window
 
 from scripts.config import (
     CSV_NAME,
-    FORCE_PROCESS,
     HASHING_TF_FEATURES,
     MIN_DF,
     MIN_TF,
@@ -69,8 +68,13 @@ def process_data() -> None:
 
     Вызывается только на driver, никогда на worker-ах.
     """
+    # Проверяем флаг форсированной обработки
+    from scripts.config import FORCE_PROCESS
+
+    force_process = FORCE_PROCESS
+
     if (
-        not FORCE_PROCESS
+        not force_process
         and TRAIN_PATH.exists()
         and VAL_PATH.exists()
         and TEST_PATH.exists()
@@ -121,8 +125,24 @@ def process_data() -> None:
     )
 
     max_text_chars = 5000
+    # Фичи пунктуации
+    df = df.withColumn("text_len", length(col("reviewText")))
+    df = df.withColumn("word_count", size(split(col("reviewText"), " ")))
+    df = df.withColumn(
+        "kindle_freq", (size(split(lower(col("reviewText")), "kindle")) - 1)
+    )
+    df = df.withColumn("exclamation_count", (size(split(col("reviewText"), "!")) - 1))
+    df = df.withColumn(
+        "caps_ratio",
+        length(regexp_replace(col("reviewText"), "[^A-Z]", ""))
+        / greatest(length(col("reviewText")), lit(1)),
+    )
+    df = df.withColumn("question_count", (size(split(col("reviewText"), "\\?")) - 1))
+    # Чистка текста
     text_col = lower(substring(col("reviewText"), 1, max_text_chars))
+    text_col = regexp_replace(text_col, r"http\S+", " ")
     text_col = regexp_replace(text_col, r"[^a-z ]+", " ")
+    text_col = regexp_replace(text_col, r"\s+", " ")
     df = df.withColumn("reviewText", text_col)
 
     # Чистим данные: валидные тексты и оценки
@@ -136,28 +156,8 @@ def process_data() -> None:
         .filter(col("row_num") <= PER_CLASS_LIMIT)
         .drop("row_num")
     )
-    balanced_count = clean.count()
     log.info(
-        "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, balanced_count
-    )
-
-    # Батчируем добавление признаков в один .select() вместо цепи .withColumn()
-    clean = clean.select(
-        "*",
-        length(col("reviewText")).alias("text_len"),
-        size(split(col("reviewText"), " ")).alias("word_count"),
-        (size(split(lower(col("reviewText")), "kindle")) - 1).alias("kindle_freq"),
-        (size(split(col("reviewText"), "!")) - 1).alias("exclamation_count"),
-        (
-            length(regexp_replace(col("reviewText"), "[^A-Z]", ""))
-            / greatest(length(col("reviewText")), lit(1))
-        ).alias("caps_ratio"),
-        (size(split(col("reviewText"), "\\?")) - 1).alias("question_count"),
-    )
-
-    # Добавляем производную колонку avg_word_length после того как есть text_len и word_count
-    clean = clean.withColumn(
-        "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
+        "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, clean.count()
     )
 
     from pyspark.sql.functions import udf
@@ -185,25 +185,30 @@ def process_data() -> None:
             # На случай ошибки парсинга — возвращаем нейтральный sentiment
             return 0.0
 
-    clean = clean.withColumn(
-        "sentiment", calculate_sentiment_textblob(col("reviewText"))
-    )
-
-    # Дополнительные sentiment метрики для анализа
-    clean = clean.withColumn(
-        "sentiment_category",
-        when(col("sentiment") > 0.1, "positive")
-        .when(col("sentiment") < -0.1, "negative")
-        .otherwise("neutral"),
-    )
-    clean = clean.withColumn(
-        "sentiment_strength",
-        when(abs(col("sentiment")) > 0.5, "strong")
-        .when(abs(col("sentiment")) > 0.2, "moderate")
-        .otherwise("weak"),
+    clean = (
+        clean.withColumn(
+            "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
+        )
+        .withColumn("sentiment", calculate_sentiment_textblob(col("reviewText")))
+        .withColumn(
+            "sentiment_category",
+            when(col("sentiment") > 0.1, "positive")
+            .when(col("sentiment") < -0.1, "negative")
+            .otherwise("neutral"),
+        )
+        .withColumn(
+            "sentiment_strength",
+            when(abs(col("sentiment")) > 0.5, "strong")
+            .when(abs(col("sentiment")) > 0.2, "moderate")
+            .otherwise("weak"),
+        )
     )
 
     clean = clean.persist(StorageLevel.MEMORY_AND_DISK)
+
+    # Материализуем кэш через action
+    features_count = clean.count()
+    log.info("После всех фич строк: %d", features_count)
 
     # Делим на выборки
     train, val, test = clean.randomSplit([0.7, 0.15, 0.15], seed=42)
@@ -285,6 +290,23 @@ def process_data() -> None:
         log.info(
             "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
         )
+
+        import os
+        import shutil
+        import stat
+
+        def remove_readonly(func, path, _):
+            """Обработчик для удаления read-only файлов."""
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
+        for path in [TRAIN_PATH, VAL_PATH, TEST_PATH]:
+            if path.exists():
+                try:
+                    shutil.rmtree(path, onerror=remove_readonly)
+                    log.info("Удалена существующая директория: %s", path)
+                except Exception as e:
+                    log.warning("Не удалось удалить %s: %s", path, e)
 
         train.write.mode("overwrite").parquet(str(TRAIN_PATH))
         val.write.mode("overwrite").parquet(str(VAL_PATH))

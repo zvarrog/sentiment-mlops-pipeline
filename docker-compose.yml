@@ -93,6 +93,7 @@ services:
       start_period: 60s
     command: >-
       bash -c "set -e;
+      rm -f /opt/airflow/airflow-webserver*.pid;
       airflow db migrate;
       airflow users list | grep -q admin@example.com || airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com;
       airflow webserver -p 8080 &

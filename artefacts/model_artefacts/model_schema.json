@@ -1,0 +1,32 @@
+{
+  "input": {
+    "text": {
+      "text_column": "reviewText",
+      "text_dim": 40
+    },
+    "numeric_features": [
+      "text_len",
+      "word_count",
+      "kindle_freq",
+      "sentiment",
+      "user_avg_len",
+      "user_review_count",
+      "item_avg_len",
+      "item_review_count",
+      "exclamation_count",
+      "caps_ratio",
+      "question_count",
+      "avg_word_length"
+    ]
+  },
+  "output": {
+    "target_dtype": "int",
+    "classes": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  }
+}

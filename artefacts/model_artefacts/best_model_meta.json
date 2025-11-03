@@ -1,0 +1,27 @@
+{
+  "best_model": "rf",
+  "best_params": {
+    "use_stemming": false,
+    "tfidf_max_features": 2000,
+    "use_svd": true,
+    "svd_components": 40,
+    "text_weight": 0.8814644995322378,
+    "numeric_weight": 6.422914172268747,
+    "rf_n_estimators": 250,
+    "rf_max_depth": 10,
+    "rf_min_samples_split": 5,
+    "rf_bootstrap": true
+  },
+  "best_val_f1_macro": 0.4823680823680824,
+  "test_metrics": {
+    "accuracy": 0.44594594594594594,
+    "f1_macro": 0.44967040673211783,
+    "f1_weighted": 0.4512897539896138
+  },
+  "sizes": {
+    "train": 346,
+    "val": 80,
+    "test": 74
+  },
+  "duration_sec": 186.33758807182312
+}

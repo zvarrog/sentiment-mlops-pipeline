@@ -224,19 +224,28 @@ def _register_middlewares(application: FastAPI) -> None:
         """Устанавливает X-Request-ID и trace_id для запроса."""
         req_id = request.headers.get("X-Request-ID") or f"req-{id(request)}"
         set_trace_id(req_id)
-        log.info(
-            "Запрос: %s %s, X-Request-ID=%s", request.method, request.url.path, req_id
-        )
+
+        # Исключаем служебные эндпоинты из логирования
+        skip_logging = request.url.path in {"/metrics", "/health"}
+
+        if not skip_logging:
+            log.info(
+                "Запрос: %s %s, X-Request-ID=%s",
+                request.method,
+                request.url.path,
+                req_id,
+            )
         try:
             response = await call_next(request)
         finally:
-            log.info(
-                "Ответ: %s %s -> %s, X-Request-ID=%s",
-                request.method,
-                request.url.path,
-                getattr(request.state, "status_code", "?"),
-                get_trace_id(),
-            )
+            if not skip_logging:
+                log.info(
+                    "Ответ: %s %s -> %s, X-Request-ID=%s",
+                    request.method,
+                    request.url.path,
+                    getattr(request.state, "status_code", "?"),
+                    get_trace_id(),
+                )
             clear_trace_id()
         response.headers["X-Request-ID"] = req_id
         return response
@@ -246,8 +255,18 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
     """Регистрирует маршруты API."""
 
     @application.get("/health")
-    def health():
+    def health(response: Response):
         """Проверка состояния API и загруженной модели."""
+        model_loaded = getattr(application.state, "MODEL", None) is not None
+
+        if not model_loaded:
+            response.status_code = 503
+            return {
+                "status": "waiting_for_model",
+                "model_exists": BEST_MODEL_PATH.exists(),
+                "message": "API запущен, ожидается обучение модели",
+            }
+
         return {
             "status": "ok",
             "model_exists": BEST_MODEL_PATH.exists(),
@@ -473,8 +492,14 @@ def _load_artifacts(application: FastAPI) -> None:
     """Загружает модель и артефакты (метаданные, baseline статистики, контракт признаков)."""
     log.info("Загрузка артефактов модели...")
     if not BEST_MODEL_PATH.exists():
-        log.error("Модель не найдена: %s", BEST_MODEL_PATH)
-        raise FileNotFoundError(f"Модель не найдена: {BEST_MODEL_PATH}")
+        log.warning(
+            "Модель не найдена: %s — API запустится в режиме ожидания", BEST_MODEL_PATH
+        )
+        application.state.MODEL = None
+        application.state.META = {}
+        application.state.NUMERIC_DEFAULTS = {}
+        application.state.FEATURE_CONTRACT = None
+        return
 
     application.state.MODEL = joblib.load(BEST_MODEL_PATH)
     log.info("Модель загружена: %s", BEST_MODEL_PATH)
@@ -566,7 +591,7 @@ def _build_dataframe(
                 s.str.replace(r"[^A-Z]", "", regex=True).str.len().astype(float)
                 / s.str.len().clip(lower=1).astype(float)
             ).fillna(0.0),
-            "question_count": lambda s: s.str.count(r"\\?").astype(float),
+            "question_count": lambda s: s.str.count(r"\?").astype(float),
             "avg_word_length": lambda s: (
                 s.str.len().astype(float)
                 / s.str.split().str.len().clip(lower=1).astype(float)
@@ -574,10 +599,24 @@ def _build_dataframe(
             "sentiment": _sentiment_textblob,
         }
 
-    s = df["reviewText"].fillna("")
+    # Фичи пунктуации
+    s_raw = df["reviewText"].fillna("")
     for col, extractor in _text_feature_extractors().items():
-        if col in numeric_cols and col not in df.columns:
-            df[col] = extractor(s)
+        if col in numeric_cols and col not in df.columns and col != "sentiment":
+            df[col] = extractor(s_raw)
+
+    # Чистка текста
+    s = s_raw.str.lower().str.slice(0, 5000)
+    s = s.str.replace(r"http\S+", " ", regex=True)
+    s = s.str.replace(r"[^a-z ]+", " ", regex=True)
+    s = s.str.replace(r"\s+", " ", regex=True)
+    df["reviewText"] = s
+
+    # sentiment после чистки
+    if "sentiment" in numeric_cols and "sentiment" not in df.columns:
+        df["sentiment"] = _text_feature_extractors()["sentiment"](
+            df["reviewText"].fillna("")
+        )
 
     # Остальные требуемые числовые колонки заполним базовыми значениями или нулями
     baseline_stats = getattr(application.state, "NUMERIC_DEFAULTS", {})

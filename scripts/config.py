@@ -12,9 +12,10 @@ from dotenv import load_dotenv
 from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
 
-# Загружаем .env только если не в окружении уже (например, Docker)
-if not os.environ.get("DOCKER_ENV"):
-    load_dotenv()
+# Загружаем .env в самом начале — даже в Docker, чтобы поддержать переопределение
+load_dotenv(
+    override=False
+)  # override=False — не перезаписывает уже установленные os.environ
 
 
 def _getenv_bool(key: str, default: bool = False) -> bool:
@@ -72,7 +73,7 @@ RUN_DRIFT_MONITOR = _getenv_bool("RUN_DRIFT_MONITOR", False)
 RUN_DATA_VALIDATION = _getenv_bool("RUN_DATA_VALIDATION", True)
 
 # Обработка данных
-PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 100)
+PER_CLASS_LIMIT = 100  # _getenv_int("PER_CLASS_LIMIT", 35000)
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
 SHUFFLE_PARTITIONS = _getenv_int("SHUFFLE_PARTITIONS", 32)
 MIN_DF = _getenv_int("MIN_DF", 3)
@@ -86,7 +87,7 @@ TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
 FORCE_SVD_THRESHOLD_MB = _getenv_int("FORCE_SVD_THRESHOLD_MB", 4000)
 
 # Обучение
-OPTUNA_N_TRIALS = _getenv_int("OPTUNA_N_TRIALS", 1)
+OPTUNA_N_TRIALS = 1  # _getenv_int("OPTUNA_N_TRIALS", 30)
 OPTUNA_STORAGE = os.environ.get(
     "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
 )
@@ -152,7 +153,6 @@ def get_tfidf_max_features_range(n_samples: int) -> tuple[int, int, int]:
     step = TFIDF_MAX_FEATURES_STEP
 
     # Масштабируем диапазон в зависимости от размера датасета
-    # Меньше выборка -> меньше features нужно
     scaling_factor = max(0.5, min(1.0, n_samples / 100000))
     adjusted_min = max(500, int(min_val * scaling_factor))
     adjusted_max = int(max_val * scaling_factor)
