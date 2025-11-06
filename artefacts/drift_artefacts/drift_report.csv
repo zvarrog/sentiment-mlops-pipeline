@@ -1,0 +1,13 @@
+feature,psi,drift
+text_len,0.1295212228799081,False
+word_count,0.07446835293060722,False
+kindle_freq,0.0,False
+sentiment,0.10081442218386556,False
+user_avg_len,4.460828554578833,True
+user_review_count,0.26565098391653497,True
+item_avg_len,8.58072075629191,True
+item_review_count,0.0,False
+exclamation_count,0.0038798062911690875,False
+caps_ratio,0.27603070173303507,True
+question_count,0.04572548839600292,False
+avg_word_length,0.06610304910888273,False

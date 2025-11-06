@@ -68,8 +68,6 @@ services:
       - ./data:/opt/airflow/data
       - ./artefacts:/opt/airflow/artefacts
       - airflow_logs:/opt/airflow/logs
-      # Монтируем kaggle.json через переменную окружения KAGGLE_JSON.
-      # По умолчанию файл ожидается в корне проекта ./kaggle.json.
       - ${KAGGLE_JSON:-./kaggle.json}:/home/airflow/.kaggle/kaggle.json:ro
     # Для запуска на GPU, раскомментируйте строку ниже (требуются драйверы/Nvidia Container Toolkit):
     # gpus: all
@@ -93,6 +91,8 @@ services:
       start_period: 60s
     command: >-
       bash -c "set -e;
+      mkdir -p /opt/airflow/data/processed /opt/airflow/data/raw;
+      chown -R 50000:0 /opt/airflow/data || chmod -R 777 /opt/airflow/data;
       rm -f /opt/airflow/airflow-webserver*.pid;
       airflow db migrate;
       airflow users list | grep -q admin@example.com || airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com;
@@ -170,7 +170,6 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin

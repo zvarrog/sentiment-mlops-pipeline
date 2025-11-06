@@ -1,0 +1,62 @@
+[
+  {
+    "feature": "text_len",
+    "psi": 0.1295212228799081,
+    "drift": false
+  },
+  {
+    "feature": "word_count",
+    "psi": 0.07446835293060722,
+    "drift": false
+  },
+  {
+    "feature": "kindle_freq",
+    "psi": 0.0,
+    "drift": false
+  },
+  {
+    "feature": "sentiment",
+    "psi": 0.10081442218386556,
+    "drift": false
+  },
+  {
+    "feature": "user_avg_len",
+    "psi": 4.460828554578833,
+    "drift": true
+  },
+  {
+    "feature": "user_review_count",
+    "psi": 0.26565098391653497,
+    "drift": true
+  },
+  {
+    "feature": "item_avg_len",
+    "psi": 8.58072075629191,
+    "drift": true
+  },
+  {
+    "feature": "item_review_count",
+    "psi": 0.0,
+    "drift": false
+  },
+  {
+    "feature": "exclamation_count",
+    "psi": 0.0038798062911690875,
+    "drift": false
+  },
+  {
+    "feature": "caps_ratio",
+    "psi": 0.27603070173303507,
+    "drift": true
+  },
+  {
+    "feature": "question_count",
+    "psi": 0.04572548839600292,
+    "drift": false
+  },
+  {
+    "feature": "avg_word_length",
+    "psi": 0.06610304910888273,
+    "drift": false
+  }
+]

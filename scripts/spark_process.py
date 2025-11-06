@@ -7,7 +7,6 @@
 * Контролируемое число shuffle партиций для малых/средних объёмов
 """
 
-import contextlib
 from pathlib import Path
 
 from pyspark import StorageLevel
@@ -85,27 +84,19 @@ def process_data() -> None:
         )
         return
 
-    # Создаём SparkSession (если скрипт запускается сам по себе)
-    try:
-        spark = (
-            SparkSession.builder.appName("KindleReviews")
-            .config("spark.driver.memory", SPARK_DRIVER_MEMORY)
-            .config("spark.executor.memory", SPARK_EXECUTOR_MEMORY)
-            .config("spark.executor.cores", str(SPARK_NUM_CORES))
-            .config("spark.driver.cores", str(SPARK_NUM_CORES))
-            .config("spark.sql.adaptive.enabled", "true")
-            .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-            .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-            .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-            .getOrCreate()
-        )
-    except Exception:
-        # если SparkSession уже создан в окружении, просто получим текущий
-        spark = SparkSession.builder.getOrCreate()
-
-    # Снижаем число shuffle партиций для средних объёмов
-    with contextlib.suppress(Exception):
-        spark.conf.set("spark.sql.shuffle.partitions", str(SHUFFLE_PARTITIONS))
+    spark = (
+        SparkSession.builder.appName("KindleReviews")
+        .config("spark.driver.memory", SPARK_DRIVER_MEMORY)
+        .config("spark.executor.memory", SPARK_EXECUTOR_MEMORY)
+        .config("spark.executor.cores", str(SPARK_NUM_CORES))
+        .config("spark.driver.cores", str(SPARK_NUM_CORES))
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.shuffle.partitions", str(SHUFFLE_PARTITIONS))
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+        .getOrCreate()
+    )
 
     log.info(
         "Конфигурация: driverMemory=%s, executorMemory=%s, cores=%s, shuffle.partitions=%s",
@@ -291,23 +282,6 @@ def process_data() -> None:
             "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
         )
 
-        import os
-        import shutil
-        import stat
-
-        def remove_readonly(func, path, _):
-            """Обработчик для удаления read-only файлов."""
-            os.chmod(path, stat.S_IWRITE)
-            func(path)
-
-        for path in [TRAIN_PATH, VAL_PATH, TEST_PATH]:
-            if path.exists():
-                try:
-                    shutil.rmtree(path, onerror=remove_readonly)
-                    log.info("Удалена существующая директория: %s", path)
-                except Exception as e:
-                    log.warning("Не удалось удалить %s: %s", path, e)
-
         train.write.mode("overwrite").parquet(str(TRAIN_PATH))
         val.write.mode("overwrite").parquet(str(VAL_PATH))
         test.write.mode("overwrite").parquet(str(TEST_PATH))
@@ -324,16 +298,12 @@ def process_data() -> None:
 
     log.info(
         "Данные сохранены в %s",
-        str(Path(PROCESSED_DATA_DIR).resolve()),
+        str(PROCESSED_DATA_DIR.resolve()),
     )
 
-    # Валидация сохранённых данных
-    import os
+    from scripts.config import RUN_DATA_VALIDATION
 
-    _val_raw = os.environ.get("RUN_DATA_VALIDATION", "1").strip().lower()
-    run_validation = _val_raw in {"1", "true", "yes", "y", "on"}
-
-    if run_validation:
+    if RUN_DATA_VALIDATION:
         log.info("Проверка: запуск валидации сохранённых parquet файлов...")
         try:
             # Используем pandas для валидации после записи Spark
@@ -352,22 +322,9 @@ def process_data() -> None:
 
         except Exception as e:
             log.warning("Ошибка валидации сохранённых данных: %s", e)
-    else:
-        log.info("Валидация сохранённых данных пропущена: RUN_DATA_VALIDATION=0")
 
     log.info("Обработка завершена.")
-    # Безопасная остановка Spark и закрытие Py4J gateway
-    try:
-        spark.stop()
-    except Exception as _e:
-        log.warning("Spark JVM уже остановлена или недоступна: %s", _e)
-    # Пытаемся закрыть Py4J gateway, чтобы не оставлять фоновые процессы
-    try:
-        sc = getattr(spark, "_sc", None)
-        if sc is not None and getattr(sc, "_gateway", None) is not None:
-            sc._gateway.close()
-    except Exception as _e:
-        log.debug("Не удалось закрыть Py4J gateway: %s", _e)
+    spark.stop()
 
 
 if __name__ == "__main__":

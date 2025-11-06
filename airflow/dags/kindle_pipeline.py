@@ -145,6 +145,12 @@ def _setup_env(**context):
 
     os.environ["OPTUNA_STORAGE"] = optuna_storage
 
+    import importlib
+    import sys
+
+    if "scripts.config" in sys.modules:
+        importlib.reload(sys.modules["scripts.config"])
+
 
 # Monitoring callbacks для режима monitored
 def log_task_duration(**context):
@@ -703,7 +709,6 @@ with DAG(
         python_callable=_task_train_standard,
     )
 
-    # Динамическая генерация заданий обучения на основе SELECTED_MODEL_KINDS
     from scripts.config import SELECTED_MODEL_KINDS
 
     _MODEL_KINDS = [mk.value for mk in SELECTED_MODEL_KINDS]

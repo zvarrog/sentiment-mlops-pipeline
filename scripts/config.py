@@ -12,10 +12,9 @@ from dotenv import load_dotenv
 from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
 
-# Загружаем .env в самом начале — даже в Docker, чтобы поддержать переопределение
-load_dotenv(
-    override=False
-)  # override=False — не перезаписывает уже установленные os.environ
+# Загружаем .env только если не в Airflow (Airflow использует env_file в docker-compose)
+if not os.environ.get("AIRFLOW_HOME"):
+    load_dotenv(override=False)
 
 
 def _getenv_bool(key: str, default: bool = False) -> bool:

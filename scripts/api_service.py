@@ -143,6 +143,19 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
         # Старт
         if not defer_artifacts:
             _load_artifacts(app)
+
+        # Инициализация метрик ошибок нулевыми значениями для корректной работы дашборда
+        # Важно: используем .inc(0), чтобы корректно зарегистрировать time series в registry
+        for endpoint in ["/predict", "/batch_predict"]:
+            for error_type in [
+                "model_not_loaded",
+                "empty_input",
+                "validation_error",
+            ]:
+                ERROR_COUNT.labels(
+                    method="POST", endpoint=endpoint, error_type=error_type
+                ).inc(0)
+
         log.info("API запущен и готов принимать запросы")
 
         yield
