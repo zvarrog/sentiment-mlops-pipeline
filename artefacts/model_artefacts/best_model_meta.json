@@ -2,26 +2,25 @@
   "best_model": "rf",
   "best_params": {
     "use_stemming": false,
-    "tfidf_max_features": 2000,
-    "use_svd": true,
-    "svd_components": 40,
-    "text_weight": 0.8814644995322378,
-    "numeric_weight": 6.422914172268747,
+    "tfidf_max_features": 1500,
+    "use_svd": false,
+    "text_weight": 0.7360384796388233,
+    "numeric_weight": 6.308267601965082,
     "rf_n_estimators": 250,
-    "rf_max_depth": 10,
-    "rf_min_samples_split": 5,
+    "rf_max_depth": 14,
+    "rf_min_samples_split": 8,
     "rf_bootstrap": true
   },
-  "best_val_f1_macro": 0.4823680823680824,
+  "best_val_f1_macro": 0.5222808527877653,
   "test_metrics": {
-    "accuracy": 0.44594594594594594,
-    "f1_macro": 0.44967040673211783,
-    "f1_weighted": 0.4512897539896138
+    "accuracy": 0.4057971014492754,
+    "f1_macro": 0.396109286626528,
+    "f1_weighted": 0.40220101589416934
   },
   "sizes": {
-    "train": 346,
-    "val": 80,
-    "test": 74
+    "train": 345,
+    "val": 86,
+    "test": 69
   },
-  "duration_sec": 186.33758807182312
+  "duration_sec": 32.56885743141174
 }

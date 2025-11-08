@@ -1,0 +1,19 @@
+{
+  "model": "rf",
+  "best_params": {
+    "use_stemming": false,
+    "tfidf_max_features": 2500,
+    "use_svd": true,
+    "svd_components": 80,
+    "text_weight": 0.9110545597888227,
+    "numeric_weight": 3.940458870356617,
+    "rf_n_estimators": 100,
+    "rf_max_depth": 12,
+    "rf_min_samples_split": 9,
+    "rf_bootstrap": false
+  },
+  "val_f1_macro": 0.4032222222222222,
+  "test_f1_macro": 0.3582695792414462,
+  "val_accuracy": 0.3953488372093023,
+  "test_accuracy": 0.37681159420289856
+}

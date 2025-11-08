@@ -21,14 +21,13 @@ from pyspark.sql.functions import (
     length,
     lit,
     lower,
+    rand,
     regexp_replace,
-    row_number,
     size,
     split,
     substring,
     when,
 )
-from pyspark.sql.window import Window
 
 from scripts.config import (
     CSV_NAME,
@@ -45,6 +44,7 @@ from scripts.config import (
 )
 
 from .logging_config import setup_auto_logging
+from .text_features import calculate_sentiment
 
 TRAIN_PATH = PROCESSED_DATA_DIR / "train.parquet"
 VAL_PATH = PROCESSED_DATA_DIR / "val.parquet"
@@ -140,41 +140,30 @@ def process_data() -> None:
     clean = df.filter((col("reviewText").isNotNull()) & (col("overall").isNotNull()))
     log.info("После фильтрации null: %s", clean.count())
 
-    # Балансировка: берём последние n по каждому классу
-    window = Window.partitionBy("overall").orderBy(col("unixReviewTime").desc())
-    clean = (
-        clean.withColumn("row_num", row_number().over(window))
-        .filter(col("row_num") <= PER_CLASS_LIMIT)
-        .drop("row_num")
-    )
+    class_counts = clean.groupBy("overall").count().collect()
+    min_class_size = min([row["count"] for row in class_counts])
+    sample_size = min(min_class_size, PER_CLASS_LIMIT)
+
+    balanced_dfs = []
+    for rating in [1, 2, 3, 4, 5]:
+        class_df = clean.filter(col("overall") == rating)
+        sampled = class_df.orderBy(rand(seed=42)).limit(sample_size)
+        balanced_dfs.append(sampled)
+
+    clean = balanced_dfs[0]
+    for df_part in balanced_dfs[1:]:
+        clean = clean.union(df_part)
     log.info(
         "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, clean.count()
     )
 
     from pyspark.sql.functions import udf
     from pyspark.sql.types import FloatType
-    from textblob import TextBlob
 
     @udf(FloatType())
     def calculate_sentiment_textblob(text: str) -> float:
-        """Вычисляет sentiment score с помощью TextBlob.
-
-        Возвращает polarity от -1 (негативный) до +1 (позитивный).
-        Использует встроенные модели и словари TextBlob.
-
-        Эта функция запускается на worker-ах Spark,
-        поэтому НЕ должна создавать SparkSession или зависеть от внешних ресурсов.
-        """
-        if not text or len(text.strip()) < 3:
-            return 0.0
-
-        try:
-            blob = TextBlob(text)
-            polarity = blob.sentiment.polarity
-            return float(max(-1.0, min(1.0, round(polarity, 4))))
-        except Exception:
-            # На случай ошибки парсинга — возвращаем нейтральный sentiment
-            return 0.0
+        """UDF обёртка для общей функции sentiment из text_features."""
+        return calculate_sentiment(text)
 
     clean = (
         clean.withColumn(

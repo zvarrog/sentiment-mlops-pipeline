@@ -18,7 +18,6 @@ if not os.environ.get("AIRFLOW_HOME"):
 
 
 def _getenv_bool(key: str, default: bool = False) -> bool:
-    """Читает булеву переменную окружения."""
     val = os.environ.get(key, "").strip().lower()
     if val in ("1", "true", "yes", "on"):
         return True
@@ -28,15 +27,20 @@ def _getenv_bool(key: str, default: bool = False) -> bool:
 
 
 def _getenv_int(key: str, default: int) -> int:
-    """Читает целочисленную переменную окружения."""
     try:
         return int(os.environ.get(key, str(default)))
     except (ValueError, TypeError):
         return default
 
 
+def _getenv_float(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
 def _getenv_path(key: str, default: str) -> Path:
-    """Читает путь из переменной окружения."""
     return Path(os.environ.get(key, default))
 
 
@@ -72,7 +76,7 @@ RUN_DRIFT_MONITOR = _getenv_bool("RUN_DRIFT_MONITOR", False)
 RUN_DATA_VALIDATION = _getenv_bool("RUN_DATA_VALIDATION", True)
 
 # Обработка данных
-PER_CLASS_LIMIT = 100  # _getenv_int("PER_CLASS_LIMIT", 35000)
+PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 35000)
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
 SHUFFLE_PARTITIONS = _getenv_int("SHUFFLE_PARTITIONS", 32)
 MIN_DF = _getenv_int("MIN_DF", 3)
@@ -85,8 +89,12 @@ TFIDF_MAX_FEATURES_MAX = _getenv_int("TFIDF_MAX_FEATURES_MAX", 6000)
 TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
 FORCE_SVD_THRESHOLD_MB = _getenv_int("FORCE_SVD_THRESHOLD_MB", 4000)
 
+# Эвристики для оценки размера TF-IDF матрицы при force_svd расчётах
+SVD_ESTIMATION_AVG_TERMS = _getenv_int("SVD_ESTIMATION_AVG_TERMS", 120)
+SVD_ESTIMATION_BIGRAM_COEF = _getenv_float("SVD_ESTIMATION_BIGRAM_COEF", 1.5)
+
 # Обучение
-OPTUNA_N_TRIALS = 1  # _getenv_int("OPTUNA_N_TRIALS", 30)
+OPTUNA_N_TRIALS = _getenv_int("OPTUNA_N_TRIALS", 30)
 OPTUNA_STORAGE = os.environ.get(
     "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
 )
@@ -95,7 +103,7 @@ N_FOLDS = _getenv_int("N_FOLDS", 1)
 TRAIN_DEVICE = os.environ.get("TRAIN_DEVICE", "cpu")
 EARLY_STOP_PATIENCE = _getenv_int("EARLY_STOP_PATIENCE", 8)
 OPTUNA_TIMEOUT_SEC = _getenv_int("OPTUNA_TIMEOUT_SEC", 2400)
-MIN_TRIALS_BEFORE_EARLY_STOP = _getenv_int("MIN_TRIALS_BEFORE_EARLY_STOP", 1)
+MIN_TRIALS_BEFORE_EARLY_STOP = _getenv_int("MIN_TRIALS_BEFORE_EARLY_STOP", 15)
 DISTILBERT_TIMEOUT_SEC = _getenv_int("DISTILBERT_TIMEOUT_SEC", 1800)
 OPTUNA_TOPK_EXPORT = _getenv_int("OPTUNA_TOPK_EXPORT", 20)
 
@@ -106,11 +114,11 @@ DISTILBERT_EARLY_STOP_PATIENCE = _getenv_int("DISTILBERT_EARLY_STOP_PATIENCE", 3
 
 # Модели для обучения
 SELECTED_MODEL_KINDS = [
-    ModelKind.logreg,
+    # ModelKind.logreg,
     ModelKind.rf,
-    ModelKind.hist_gb,
-    ModelKind.mlp,
-    ModelKind.distilbert,
+    # ModelKind.hist_gb,
+    # ModelKind.mlp,
+    # ModelKind.distilbert,
 ]
 
 # MLflow

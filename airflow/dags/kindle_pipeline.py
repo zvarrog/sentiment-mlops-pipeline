@@ -518,6 +518,7 @@ def _train_model_parallel(model_kind: str, **context):
         return {
             "model": model_kind,
             "val_f1_macro": val_metrics["f1_macro"],
+            "test_f1_macro": test_metrics["f1_macro"],
             "meta_path": str(meta_path),
             "model_path": str(model_path),
         }
@@ -540,7 +541,6 @@ def select_best(results: list[dict], **context):
     from datetime import datetime
     from pathlib import Path
 
-    # Единый источник путей — scripts.config (SSoT)
     from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
     from scripts.logging_config import setup_auto_logging
 
@@ -558,6 +558,19 @@ def select_best(results: list[dict], **context):
     MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
     best_model_path = MODEL_FILE_DIR / "best_model.joblib"
 
+    from scripts.model_registry import load_old_model_metric, should_replace_model
+
+    old_model_metric = load_old_model_metric()
+    new_model_metric = best["val_f1_macro"]
+
+    if not should_replace_model(new_model_metric, old_model_metric, best["model"]):
+        return {
+            "status": "skipped",
+            "reason": "new_model_not_better",
+            "old_metric": old_model_metric,
+            "new_metric": new_model_metric,
+        }
+
     src_model = Path(best["model_path"]) if best.get("model_path") else None
     if src_model and src_model.exists():
         try:
@@ -569,14 +582,12 @@ def select_best(results: list[dict], **context):
             shutil.copyfile(src_model, best_model_path)
         log.info(f"Лучшая модель скопирована в {best_model_path}")
 
-    # Загрузка данных и модели для постпроцессинга
     try:
         from scripts.postprocessing import generate_best_bundle
         from scripts.train_modules.data_loading import load_splits
 
         x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
 
-        # Читаем best_params из исходного meta_{kind}.json
         src_meta = Path(best.get("meta_path", ""))
         best_params = {}
         if src_meta and src_meta.exists():
@@ -600,7 +611,24 @@ def select_best(results: list[dict], **context):
     except Exception as e:
         log.warning(f"Постпроцессинг лучшей модели частично пропущен: {e}")
 
-    # Обработка кандидатов по флагу KEEP_CANDIDATES
+    try:
+        import mlflow
+
+        from scripts.config import MLFLOW_TRACKING_URI
+        from scripts.model_registry import register_model_in_mlflow
+        from scripts.models.kinds import ModelKind
+
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+
+        best_kind = ModelKind(best["model"])
+        test_f1 = best.get("test_f1_macro", 0.0)
+
+        register_model_in_mlflow(
+            best_model_path, best_kind, test_f1, mlflow_run_active=False
+        )
+    except Exception as e:
+        log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
+
     try:
         keep = os.environ.get("KEEP_CANDIDATES", "0").strip().lower() in {
             "1",

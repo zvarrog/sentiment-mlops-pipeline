@@ -64,20 +64,6 @@ REQUEST_DURATION = Histogram(
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
 )
 
-REQUEST_SIZE = Histogram(
-    "api_request_size_bytes",
-    "Size of API request bodies",
-    ["method", "endpoint"],
-    buckets=(100, 500, 1000, 5000, 10000, 50000, 100000),
-)
-
-RESPONSE_SIZE = Histogram(
-    "api_response_size_bytes",
-    "Size of API response bodies",
-    ["method", "endpoint"],
-    buckets=(100, 500, 1000, 5000, 10000, 50000, 100000),
-)
-
 PREDICTION_COUNT = Counter(
     "predictions_total",
     "Total predictions made",
@@ -144,14 +130,9 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
         if not defer_artifacts:
             _load_artifacts(app)
 
-        # Инициализация метрик ошибок нулевыми значениями для корректной работы дашборда
-        # Важно: используем .inc(0), чтобы корректно зарегистрировать time series в registry
+        # Инициализация метрик ошибок для корректной работы дашборда
         for endpoint in ["/predict", "/batch_predict"]:
-            for error_type in [
-                "model_not_loaded",
-                "empty_input",
-                "validation_error",
-            ]:
+            for error_type in ["model_not_loaded", "empty_input", "validation_error"]:
                 ERROR_COUNT.labels(
                     method="POST", endpoint=endpoint, error_type=error_type
                 ).inc(0)
@@ -194,18 +175,6 @@ def _register_middlewares(application: FastAPI) -> None:
         """Сбор метрик Prometheus по каждому запросу."""
         start = time.perf_counter()
 
-        request_size = 0
-        if request.method in ("POST", "PUT", "PATCH"):
-            try:
-                body = await request.body()
-                request_size = len(body)
-                REQUEST_SIZE.labels(
-                    method=request.method,
-                    endpoint=request.url.path,
-                ).observe(request_size)
-            except Exception:
-                pass
-
         response = await call_next(request)
         duration = time.perf_counter() - start
 
@@ -219,16 +188,6 @@ def _register_middlewares(application: FastAPI) -> None:
             method=request.method,
             endpoint=request.url.path,
         ).observe(duration)
-
-        try:
-            response_size = int(response.headers.get("content-length", 0))
-            if response_size > 0:
-                RESPONSE_SIZE.labels(
-                    method=request.method,
-                    endpoint=request.url.path,
-                ).observe(response_size)
-        except (ValueError, TypeError):
-            pass
 
         return response
 
@@ -625,7 +584,6 @@ def _build_dataframe(
     s = s.str.replace(r"\s+", " ", regex=True)
     df["reviewText"] = s
 
-    # sentiment после чистки
     if "sentiment" in numeric_cols and "sentiment" not in df.columns:
         df["sentiment"] = _text_feature_extractors()["sentiment"](
             df["reviewText"].fillna("")
@@ -641,10 +599,6 @@ def _build_dataframe(
     return df, ignored_features
 
 
-# Конец регистрации маршрутов
-
-
-# Экземпляр по умолчанию для совместимости со старыми импортами
 app = create_app()
 
 # Локальный запуск: uvicorn scripts.api_service:app --host 0.0.0.0 --port 8000

@@ -17,28 +17,21 @@ import optuna
 import pandas as pd
 import sklearn
 from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import TruncatedSVD
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-
-# локальные реализации метрик и визуализаций ниже
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     f1_score,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 from scripts.config import (
     DISTILBERT_TIMEOUT_SEC,
     EARLY_STOP_PATIENCE,
-    FORCE_SVD_THRESHOLD_MB,
     MIN_TRIALS_BEFORE_EARLY_STOP,
     MLFLOW_TRACKING_URI,
-    MODEL_PRODUCTION_THRESHOLD,
+    MODEL_ARTEFACTS_DIR,
+    MODEL_FILE_DIR,
     N_FOLDS,
     OPTUNA_N_TRIALS,
     OPTUNA_STORAGE,
@@ -47,15 +40,14 @@ from scripts.config import (
     SELECTED_MODEL_KINDS,
     STUDY_BASE_NAME,
     TRAIN_DEVICE,
-    get_tfidf_max_features_range,
     log,
 )
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
 from scripts.train_modules.data_loading import load_splits
 from scripts.train_modules.evaluation import compute_metrics
-from scripts.train_modules.feature_space import NUMERIC_COLS, DenseTransformer
-from scripts.train_modules.models import SimpleMLP
+from scripts.train_modules.feature_space import NUMERIC_COLS
+from scripts.train_modules.pipeline_builders import ModelBuilderFactory
 
 # Подавляем избыточные предупреждения
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -94,177 +86,24 @@ def log_artifact_safe(path: Path, artifact_name: str) -> None:
 def build_pipeline(
     trial: optuna.Trial, model_name, fixed_solver: str | None = None
 ) -> Pipeline:
+    """Создаёт Pipeline для указанной модели используя фабрику строителей.
+
+    Args:
+        trial: Объект trial Optuna для предложения гиперпараметров.
+        model_name: Тип модели (ModelKind или строка).
+        fixed_solver: Фиксированный солвер для LogReg (опционально).
+
+    Returns:
+        Настроенный Pipeline для модели.
+    """
     model_kind: ModelKind
     if isinstance(model_name, ModelKind):
         model_kind = model_name
     else:
         model_kind = ModelKind(str(model_name))
 
-    if model_kind is ModelKind.distilbert:
-        from scripts.config import (
-            DISTILBERT_MAX_EPOCHS,
-            DISTILBERT_MIN_EPOCHS,
-        )
-
-        epochs = trial.suggest_int(
-            "db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS
-        )
-        lr = trial.suggest_float("db_lr", 1e-5, 5e-5, log=True)
-        max_len = trial.suggest_int("db_max_len", 96, 192, step=32)
-        use_bi = trial.suggest_categorical("db_use_bigrams", [False, True])
-        clf = DistilBertClassifier(
-            epochs=epochs,
-            lr=lr,
-            max_len=max_len,
-            device=TRAIN_DEVICE,
-            use_bigrams=use_bi,
-        )
-        return Pipeline([("distilbert", clf)])
-
-    from scripts.train_modules.text_analyzers import make_tfidf_analyzer
-
-    use_stemming = trial.suggest_categorical("use_stemming", [False, True])
-
-    n_train_samples = int(trial.user_attrs.get("n_train_samples", 20000))
-    tfidf_min, tfidf_max, tfidf_step = get_tfidf_max_features_range(n_train_samples)
-
-    text_max_features = trial.suggest_int(
-        "tfidf_max_features",
-        tfidf_min,
-        tfidf_max,
-        step=tfidf_step,
-    )
-
-    # Базовый TF-IDF для всех моделей
-    tfidf = TfidfVectorizer(
-        max_features=text_max_features,
-        ngram_range=(1, 2),
-        dtype=np.float32,
-        stop_words="english",
-        analyzer=make_tfidf_analyzer(use_stemming),
-    )
-
-    if model_kind is ModelKind.logreg:
-        use_svd = False
-        text_steps = [("tfidf", tfidf)]
-    else:
-        n_samples_est = int(trial.user_attrs.get("n_train_samples", 20000))
-        avg_terms = 120
-        bigram_coef = 1.5
-        estimated_nnz = n_samples_est * avg_terms * bigram_coef
-        estimated_size_mb = (estimated_nnz * 4) / (1024 * 1024)
-        force_svd = estimated_size_mb > FORCE_SVD_THRESHOLD_MB
-
-        if force_svd:
-            log.warning(
-                "Принудительно включаю SVD: оценка памяти TF-IDF ~ %.1f MB (порог=%d MB, n≈%d, terms≈%d)",
-                estimated_size_mb,
-                FORCE_SVD_THRESHOLD_MB,
-                n_samples_est,
-                avg_terms,
-            )
-            use_svd = True
-            svd_components = trial.suggest_int("svd_components", 20, 100, step=20)
-        else:
-            use_svd = trial.suggest_categorical("use_svd", [False, True])
-            if use_svd:
-                svd_components = trial.suggest_int("svd_components", 20, 100, step=20)
-            else:
-                svd_components = (
-                    None  # Значение по умолчанию, когда SVD не используется
-                )
-
-        text_steps = [("tfidf", tfidf)]
-        if use_svd and svd_components is not None:
-            text_steps.append(
-                ("svd", TruncatedSVD(n_components=svd_components, random_state=SEED))
-            )
-    text_pipeline = Pipeline(text_steps)
-
-    numeric_available = [
-        c
-        for c in NUMERIC_COLS
-        if c in trial.user_attrs.get("numeric_cols", NUMERIC_COLS)
-    ]
-    numeric_pipeline = Pipeline(
-        [
-            ("imputer", SimpleImputer(strategy="constant", fill_value=0)),
-            ("scaler", StandardScaler()),
-        ]
-    )
-
-    text_weight = trial.suggest_float("text_weight", 0.1, 1.0)
-    numeric_weight = trial.suggest_float("numeric_weight", 1.0, 10.0)
-
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("text", text_pipeline, "reviewText"),
-            ("num", numeric_pipeline, numeric_available),
-        ],
-        transformer_weights={"text": text_weight, "num": numeric_weight},
-        sparse_threshold=0.3,
-    )
-    steps = [("pre", preprocessor)]
-
-    if model_kind is ModelKind.logreg:
-        C = trial.suggest_float("logreg_C", 1e-4, 1e2, log=True)
-        if fixed_solver is not None:
-            solver = trial.suggest_categorical("logreg_solver", [fixed_solver])
-        else:
-            solver = trial.suggest_categorical(
-                "logreg_solver", ["lbfgs", "liblinear", "saga"]
-            )
-        # Стабильные распределения без динамики пространства для одной study
-        pen_lbfgs = trial.suggest_categorical("logreg_penalty_lbfgs", ["l2"])
-        pen_others = trial.suggest_categorical(
-            "logreg_penalty_liblinear_saga", ["l1", "l2"]
-        )
-        penalty = pen_lbfgs if solver == "lbfgs" else pen_others
-        if solver == "lbfgs":
-            steps.append(("to_dense", DenseTransformer()))
-        clf = LogisticRegression(
-            max_iter=2500,
-            C=C,
-            class_weight="balanced",
-            solver=solver,
-            penalty=penalty,
-        )
-    elif model_kind is ModelKind.rf:
-        n_estimators = trial.suggest_int("rf_n_estimators", 100, 300, step=50)
-        max_depth = trial.suggest_int("rf_max_depth", 6, 18, step=2)
-        min_samples_split = trial.suggest_int("rf_min_samples_split", 2, 10)
-        bootstrap = trial.suggest_categorical("rf_bootstrap", [True, False])
-        clf = RandomForestClassifier(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            min_samples_split=min_samples_split,
-            bootstrap=bootstrap,
-            n_jobs=-1,
-            class_weight="balanced_subsample",
-            random_state=SEED,
-        )
-    elif model_kind is ModelKind.mlp:
-        hidden = trial.suggest_int("mlp_hidden", 64, 256, step=64)
-        epochs = trial.suggest_int("mlp_epochs", 3, 8)
-        lr = trial.suggest_float("mlp_lr", 1e-4, 5e-3, log=True)
-        steps.append(("to_dense", DenseTransformer()))
-        clf = SimpleMLP(hidden_dim=hidden, epochs=epochs, lr=lr, device=TRAIN_DEVICE)
-    else:
-        lr = trial.suggest_float("hist_gb_lr", 0.01, 0.3, log=True)
-        max_iter = trial.suggest_int("hist_gb_max_iter", 60, 160, step=20)
-        l2 = trial.suggest_float("hist_gb_l2_regularization", 0.0, 1.0)
-        min_leaf = trial.suggest_int("hist_gb_min_samples_leaf", 10, 60, step=10)
-        clf = HistGradientBoostingClassifier(
-            learning_rate=lr,
-            max_iter=max_iter,
-            l2_regularization=l2,
-            min_samples_leaf=min_leaf,
-            random_state=SEED,
-        )
-        steps.append(("to_dense", DenseTransformer()))
-
-    steps.append(("model", clf))
-    return Pipeline(steps)
+    builder = ModelBuilderFactory.get_builder(model_kind, trial, fixed_solver)
+    return builder.build()
 
 
 def log_confusion_matrix(y_true, y_pred, path: Path):
@@ -290,19 +129,18 @@ def log_confusion_matrix(y_true, y_pred, path: Path):
 def objective(
     trial: optuna.Trial,
     model_name: ModelKind | str,
-    X_train: pd.DataFrame,
+    x_train: pd.DataFrame,
     y_train: np.ndarray,
-    X_val: pd.DataFrame,
+    x_val: pd.DataFrame,
     y_val: np.ndarray,
-    fixed_solver: str | None = None,
 ) -> float:
     model_kind: ModelKind = (
         model_name if isinstance(model_name, ModelKind) else ModelKind(str(model_name))
     )
     trial.set_user_attr(
-        "numeric_cols", [c for c in NUMERIC_COLS if c in X_train.columns]
+        "numeric_cols", [c for c in NUMERIC_COLS if c in x_train.columns]
     )
-    trial.set_user_attr("n_train_samples", len(X_train))
+    trial.set_user_attr("n_train_samples", len(x_train))
     mlflow.log_param("model", model_kind.value)
 
     def _evaluate_with_cv_or_holdout(is_distilbert: bool) -> float:
@@ -312,33 +150,33 @@ def objective(
             skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
             f1_scores: list[float] = []
             if is_distilbert:
-                texts = X_train["reviewText"].values
+                texts = x_train["reviewText"].values
                 for tr_idx, va_idx in skf.split(texts, y_train):
-                    X_tr, X_va = texts[tr_idx], texts[va_idx]
+                    x_tr, x_va = texts[tr_idx], texts[va_idx]
                     y_tr, y_va = y_train[tr_idx], y_train[va_idx]
-                    pipe = build_pipeline(trial, model_kind, fixed_solver)
-                    pipe.fit(X_tr, y_tr)
-                    preds_fold = pipe.predict(X_va)
+                    pipe = build_pipeline(trial, model_kind)
+                    pipe.fit(x_tr, y_tr)
+                    preds_fold = pipe.predict(x_va)
                     f1_scores.append(f1_score(y_va, preds_fold, average="macro"))
             else:
-                for tr_idx, va_idx in skf.split(X_train, y_train):
-                    X_tr, X_va = X_train.iloc[tr_idx], X_train.iloc[va_idx]
+                for tr_idx, va_idx in skf.split(x_train, y_train):
+                    x_tr, x_va = x_train.iloc[tr_idx], x_train.iloc[va_idx]
                     y_tr, y_va = y_train[tr_idx], y_train[va_idx]
-                    pipe = build_pipeline(trial, model_kind, fixed_solver)
-                    pipe.fit(X_tr, y_tr)
-                    preds_fold = pipe.predict(X_va)
+                    pipe = build_pipeline(trial, model_kind)
+                    pipe.fit(x_tr, y_tr)
+                    preds_fold = pipe.predict(x_va)
                     f1_scores.append(f1_score(y_va, preds_fold, average="macro"))
 
             mean_f1 = float(np.mean(f1_scores))
             mlflow.log_metric("cv_f1_macro", mean_f1)
             return mean_f1
-        pipe = build_pipeline(trial, model_kind, fixed_solver)
+        pipe = build_pipeline(trial, model_kind)
         if is_distilbert:
-            pipe.fit(X_train["reviewText"], y_train)
-            preds = pipe.predict(X_val["reviewText"])
+            pipe.fit(x_train["reviewText"], y_train)
+            preds = pipe.predict(x_val["reviewText"])
         else:
-            pipe.fit(X_train, y_train)
-            preds = pipe.predict(X_val)
+            pipe.fit(x_train, y_train)
+            preds = pipe.predict(x_val)
         metrics = compute_metrics(y_val, preds)
         mlflow.log_metrics(metrics)
         return metrics["f1_macro"]
@@ -379,49 +217,64 @@ def _early_stop_callback(patience: int, min_trials: int):
     return cb
 
 
+def _get_feature_names(preprocessor: ColumnTransformer, use_svd: bool) -> list[str]:
+    """Извлекает имена признаков из препроцессора."""
+    feature_names: list[str] = []
+
+    text_pipe: Pipeline = preprocessor.named_transformers_["text"]
+    tfidf: TfidfVectorizer = text_pipe.named_steps["tfidf"]
+    vocab_inv = (
+        {idx: tok for tok, idx in tfidf.vocabulary_.items()}
+        if hasattr(tfidf, "vocabulary_")
+        else {}
+    )
+    text_dim = len(vocab_inv) if vocab_inv else 0
+    numeric_cols = preprocessor.transformers_[1][2]
+
+    if not use_svd and vocab_inv:
+        feature_names.extend([vocab_inv.get(i, f"tok_{i}") for i in range(text_dim)])
+    elif use_svd and "svd" in text_pipe.named_steps:
+        svd_model = text_pipe.named_steps["svd"]
+        n_components = svd_model.n_components
+
+        for comp_idx in range(n_components):
+            component = svd_model.components_[comp_idx]
+            top_indices = np.argsort(np.abs(component))[-10:][::-1]
+            top_terms = [vocab_inv.get(i, f"tok_{i}") for i in top_indices]
+            feature_name = f"svd_{comp_idx}[{','.join(top_terms[:3])}...]"
+            feature_names.append(feature_name)
+
+    feature_names.extend(list(numeric_cols))
+    return feature_names
+
+
+def _get_model_coefficients(model) -> np.ndarray | None:
+    """Извлекает коэффициенты или feature importances из модели."""
+    if hasattr(model, "coef_"):
+        return np.mean(np.abs(model.coef_), axis=0)
+    if hasattr(model, "feature_importances_"):
+        return model.feature_importances_
+    return None
+
+
 def _extract_feature_importances(
     pipeline: Pipeline, use_svd: bool
 ) -> list[dict[str, float]]:
+    """Извлекает топ-50 наиболее важных признаков из обученной модели."""
     res: list[dict[str, float]] = []
     try:
         if "pre" not in pipeline.named_steps or "model" not in pipeline.named_steps:
             return res
+
         model = pipeline.named_steps["model"]
         pre: ColumnTransformer = pipeline.named_steps["pre"]
-        text_pipe: Pipeline = pre.named_transformers_["text"]
-        tfidf: TfidfVectorizer = text_pipe.named_steps["tfidf"]
-        vocab_inv = (
-            {idx: tok for tok, idx in tfidf.vocabulary_.items()}
-            if hasattr(tfidf, "vocabulary_")
-            else {}
-        )
-        text_dim = len(vocab_inv) if vocab_inv else 0
-        numeric_cols = pre.transformers_[1][2]
-        feature_names: list[str] = []
 
-        if not use_svd and vocab_inv:
-            feature_names.extend(
-                [vocab_inv.get(i, f"tok_{i}") for i in range(text_dim)]
-            )
-        elif use_svd and "svd" in text_pipe.named_steps:
-            svd_model = text_pipe.named_steps["svd"]
-            n_components = svd_model.n_components
+        feature_names = _get_feature_names(pre, use_svd)
+        coefs = _get_model_coefficients(model)
 
-            for comp_idx in range(n_components):
-                component = svd_model.components_[comp_idx]
-                top_indices = np.argsort(np.abs(component))[-10:][::-1]
-                top_terms = [vocab_inv.get(i, f"tok_{i}") for i in top_indices]
-                feature_name = f"svd_{comp_idx}[{','.join(top_terms[:3])}...]"
-                feature_names.append(feature_name)
-
-        feature_names.extend(list(numeric_cols))
-
-        if hasattr(model, "coef_"):
-            coefs = np.mean(np.abs(model.coef_), axis=0)
-        elif hasattr(model, "feature_importances_"):
-            coefs = model.feature_importances_
-        else:
+        if coefs is None:
             return res
+
         top_idx = np.argsort(coefs)[::-1][:50]
         for i in top_idx:
             if i < len(feature_names):
@@ -452,31 +305,18 @@ def run():
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
-    from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
-
     MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_ARTEFACTS_DIR.mkdir(parents=True, exist_ok=True)
     best_path = MODEL_FILE_DIR / "best_model.joblib"
-    best_meta_path = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
 
     from scripts.config import FORCE_TRAIN
 
     force_train = FORCE_TRAIN
     log.info("FORCE_TRAIN=%s, наличие best_model=%s", force_train, best_path.exists())
 
-    old_model_metric = None
-    if best_meta_path.exists():
-        try:
-            with open(best_meta_path, encoding="utf-8") as f:
-                old_meta = json.load(f)
-                old_model_metric = old_meta.get("best_val_f1_macro")
-                if old_model_metric:
-                    log.info(
-                        "Найдена предыдущая модель с val_f1_macro=%.4f",
-                        old_model_metric,
-                    )
-        except Exception as e:
-            log.warning("Не удалось загрузить метаданные старой модели: %s", e)
+    from scripts.model_registry import load_old_model_metric
+
+    old_model_metric = load_old_model_metric()
 
     if best_path.exists() and not force_train:
         log.info("Модель уже существует и FORCE_TRAIN=False — пропуск")
@@ -520,29 +360,13 @@ def run():
             baseline_stats[c] = {"mean": float(s.mean()), "std": float(s.std() or 0.0)}
         _baseline_stats_cached = baseline_stats
 
-        # Перебираем модели и оптимизируем каждую в своей study
+        # Оптимизируем каждую модель в своей study
         per_model_results: dict[ModelKind, dict[str, object]] = {}
-        # Расширяем цели поиска: для logreg создаём отдельные study по solver, чтобы избежать динамики дистрибуций в одной study
-        search_targets: list[tuple[ModelKind, str | None]] = []
-        for model_name in SELECTED_MODEL_KINDS:
-            if model_name is ModelKind.logreg:
-                search_targets.extend(
-                    [
-                        (model_name, "lbfgs"),
-                        (model_name, "liblinear"),
-                        # (model_name, "saga"),  # Очень медленно сходится на больших данных
-                    ]
-                )
-            else:
-                search_targets.append((model_name, None))
 
-        for model_name, fixed_solver in search_targets:
-            # 5 стартовых трейлов без прунинга
+        for model_name in SELECTED_MODEL_KINDS:
             pruner = optuna.pruners.MedianPruner(n_startup_trials=5)
-            study_name = f"{STUDY_BASE_NAME}_{model_name.value}{('_' + fixed_solver) if fixed_solver else ''}_{_model_sig}"
+            study_name = f"{STUDY_BASE_NAME}_{model_name.value}_{_model_sig}"
             with mlflow.start_run(nested=True, run_name=f"model={model_name.value}"):
-                # Создаем study с правильной конфигурацией хранилища
-                # engine_kwargs передается через конструктор RDBStorage, а не напрямую create_study
                 study = optuna.create_study(
                     direction="maximize",
                     pruner=pruner,
@@ -550,13 +374,13 @@ def run():
                     study_name=study_name,
                     load_if_exists=True,
                 )
-                mlflow.log_param("study_name", study_name)
-                mlflow.log_param(
-                    "existing_trials",
-                    len([t for t in study.trials if t.value is not None]),
+                # Количество успешных трейлов до начала текущего запуска
+                existing_trials_before = len(
+                    [t for t in study.trials if t.value is not None]
                 )
+                mlflow.log_param("study_name", study_name)
 
-                def opt_obj(trial, model_name=model_name, fixed_solver=fixed_solver):
+                def opt_obj(trial, model_name=model_name):
                     with mlflow.start_run(nested=True):
                         result = objective(
                             trial,
@@ -565,14 +389,11 @@ def run():
                             y_train,
                             X_val,
                             y_val,
-                            fixed_solver,
                         )
-                        # Логируем каждый trial как INFO
                         log.info(
-                            "Trial %d (%s%s): value=%.4f, params=%s",
+                            "Trial %d (%s): value=%.4f, params=%s",
                             trial.number,
                             model_name.value,
-                            "/" + str(fixed_solver) if fixed_solver else "",
                             result,
                             trial.params,
                         )
@@ -604,7 +425,6 @@ def run():
                 except (RuntimeError, ValueError, optuna.exceptions.OptunaError) as e:
                     stop_reason = f"error: {e}"
 
-                # Явно логируем причину остановки
                 if stop_reason == "early_stop":
                     log.info(
                         "Optuna: остановка по ранней остановке (patience=%d)",
@@ -617,7 +437,6 @@ def run():
                 else:
                     log.info("Optuna: успешное завершение всех trial'ов")
 
-                # Проверка best_trial
                 best_trial = None
                 try:
                     if len([t for t in study.trials if t.value is not None]) > 0:
@@ -630,9 +449,20 @@ def run():
                 if not best_trial or best_trial.value is None:
                     log.warning("%s: нет успешных trial'ов — пропуск", model_name.value)
                 else:
+                    # Вычисляем свежий максимум относительно исторического количества трейлов
+                    fresh_vals = [
+                        t.value
+                        for t in study.trials
+                        if t.value is not None and t.number >= existing_trials_before
+                    ]
+                    fresh_best = max(fresh_vals) if fresh_vals else None
                     cur = per_model_results.get(model_name)
+                    # Используем свежий best если он существует, иначе общий
+                    effective_best_value = (
+                        fresh_best if fresh_best is not None else best_trial.value
+                    )
                     new_entry = {
-                        "best_value": best_trial.value,
+                        "best_value": effective_best_value,
                         "best_params": best_trial.params,
                         "study_name": study_name,
                     }
@@ -648,23 +478,13 @@ def run():
         best_info = per_model_results[best_model]
         new_model_metric = best_info["best_value"]
 
-        # Сравниваем с предыдущей моделью
-        if old_model_metric is not None:
-            if new_model_metric <= old_model_metric:
-                log.info(
-                    "Новая модель %s (val_f1_macro=%.4f) НЕ лучше предыдущей (%.4f) — сохраняем старую",
-                    best_model.value,
-                    new_model_metric,
-                    old_model_metric,
-                )
-                log.info("Обучение завершено без замены модели")
-                return
-            log.info(
-                "Новая модель %s (val_f1_macro=%.4f) лучше предыдущей (%.4f) — заменяем",
-                best_model.value,
-                new_model_metric,
-                old_model_metric,
-            )
+        from scripts.model_registry import should_replace_model
+
+        if not should_replace_model(
+            new_model_metric, old_model_metric, best_model.value
+        ):
+            log.info("Обучение завершено без замены модели")
+            return
 
         log.info(
             "Лучшая модель: %s (val_f1_macro=%.4f)", best_model.value, new_model_metric
@@ -709,13 +529,9 @@ def run():
             if tmp_model_path.exists():
                 tmp_model_path.unlink()
 
-        # Логируем артефакты модели (с graceful degradation)
         log_artifact_safe(best_path, "best_model")
 
-        # Сохраняем baseline статистики только когда модель обновляется/создаётся
-        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
-
-        bs_path = _MR / "baseline_numeric_stats.json"
+        bs_path = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
         tmp_bs = bs_path.with_suffix(".json.tmp")
         try:
             with open(tmp_bs, "w", encoding="utf-8") as f:
@@ -735,105 +551,21 @@ def run():
         test_metrics = compute_metrics(y_test, test_preds)
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
 
-        # Регистрация модели в MLflow Model Registry (перенесено после вычисления test_metrics)
-        try:
-            model_name = "sentiment_kindle_model"
+        from scripts.model_registry import register_model_in_mlflow
 
-            # Логируем модель как MLflow artifact с signature
-            if best_model is ModelKind.distilbert:
-                # Для DistilBERT используем pyfunc wrapper
-                import mlflow.pyfunc
+        register_model_in_mlflow(
+            best_path,
+            best_model,
+            test_metrics.get("f1_macro", 0.0),
+            mlflow_run_active=True,
+        )
 
-                class DistilBertWrapper(mlflow.pyfunc.PythonModel):
-                    def load_context(self, context):
-                        import joblib
-
-                        self.model = joblib.load(context.artifacts["model_path"])
-
-                    def predict(self, context, model_input):
-                        if isinstance(model_input, pd.DataFrame):
-                            texts = model_input["reviewText"].tolist()
-                        else:
-                            texts = model_input
-                        return self.model.predict(texts)
-
-                artifacts = {"model_path": str(best_path)}
-                mlflow.pyfunc.log_model(
-                    artifact_path="model",
-                    python_model=DistilBertWrapper(),
-                    artifacts=artifacts,
-                    registered_model_name=model_name,
-                )
-            else:
-                # Для sklearn моделей используем встроенную поддержку
-                import mlflow.sklearn
-
-                mlflow.sklearn.log_model(
-                    sk_model=final_pipeline,
-                    artifact_path="model",
-                    registered_model_name=model_name,
-                )
-
-            # Получаем последнюю версию и переводим в Staging
-            from mlflow.tracking import MlflowClient
-
-            client = MlflowClient()
-
-            # Находим последнюю версию зарегистрированной модели
-            latest_versions = client.get_latest_versions(model_name, stages=["None"])
-            if latest_versions:
-                latest_version = latest_versions[0].version
-
-                # Переводим в Staging для валидации
-                client.transition_model_version_stage(
-                    name=model_name,
-                    version=latest_version,
-                    stage="Staging",
-                    archive_existing_versions=False,
-                )
-                log.info(
-                    "Модель %s версия %s зарегистрирована в MLflow Registry (stage: Staging)",
-                    model_name,
-                    latest_version,
-                )
-
-                # Если метрики хорошие, переводим в Production
-                if test_metrics.get("f1_macro", 0) >= MODEL_PRODUCTION_THRESHOLD:
-                    # Архивируем старые Production версии
-                    client.transition_model_version_stage(
-                        name=model_name,
-                        version=latest_version,
-                        stage="Production",
-                        archive_existing_versions=True,
-                    )
-                    log.info(
-                        "Модель %s версия %s переведена в Production (F1=%.4f >= %.2f)",
-                        model_name,
-                        latest_version,
-                        test_metrics.get("f1_macro", 0),
-                        MODEL_PRODUCTION_THRESHOLD,
-                    )
-                else:
-                    log.warning(
-                        "Модель %s версия %s остаётся в Staging (F1=%.4f < %.2f)",
-                        model_name,
-                        latest_version,
-                        test_metrics.get("f1_macro", 0),
-                        MODEL_PRODUCTION_THRESHOLD,
-                    )
-        except Exception as e:
-            log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
-
-        # Артефакты: confusion matrix + classification report
-        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
-
-        cm_path = _MR / "confusion_matrix_test.png"
+        cm_path = MODEL_ARTEFACTS_DIR / "confusion_matrix_test.png"
         log_confusion_matrix(y_test, test_preds, cm_path)
         log_artifact_safe(cm_path, "confusion_matrix")
         cr_txt = classification_report(y_test, test_preds)
-        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
-        cr_path = _MR / "classification_report_test.txt"
+        cr_path = MODEL_ARTEFACTS_DIR / "classification_report_test.txt"
         cr_path.write_text(cr_txt, encoding="utf-8")
         log_artifact_safe(cr_path, "classification_report")
 
@@ -853,9 +585,7 @@ def run():
 
                 fi_list = _extract_feature_importances(final_pipeline, use_svd_flag)
                 if fi_list:
-                    from scripts.config import MODEL_ARTEFACTS_DIR as _MR
-
-                    fi_path = _MR / "feature_importances.json"
+                    fi_path = MODEL_ARTEFACTS_DIR / "feature_importances.json"
                     with open(fi_path, "w", encoding="utf-8") as f:
                         json.dump(fi_list, f, ensure_ascii=False, indent=2)
                     log_artifact_safe(fi_path, "feature_importances")
@@ -885,9 +615,8 @@ def run():
                             row[k] = t.params.get(k)
                         rows.append(row)
                     df = _pd.DataFrame(rows)
-                    from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
-                    csv_path = _MR / "optuna_top_trials.csv"
+                    csv_path = MODEL_ARTEFACTS_DIR / "optuna_top_trials.csv"
                     df.to_csv(csv_path, index=False)
                     log_artifact_safe(csv_path, "optuna_top_trials")
         except Exception as e:
@@ -933,9 +662,7 @@ def run():
                 classes = sorted(set(y_full.tolist()))
                 schema["output"] = {"target_dtype": "int", "classes": classes}
 
-            from scripts.config import MODEL_ARTEFACTS_DIR as _MR
-
-            schema_path = _MR / "model_schema.json"
+            schema_path = MODEL_ARTEFACTS_DIR / "model_schema.json"
             with open(schema_path, "w", encoding="utf-8") as f:
                 json.dump(schema, f, ensure_ascii=False, indent=2)
             log_artifact_safe(schema_path, "model_schema")
@@ -995,9 +722,8 @@ def run():
                 ax_roc.set_ylabel("TPR")
                 ax_roc.set_title("ROC Curve (micro)")
                 ax_roc.legend(loc="lower right", fontsize=8)
-                from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
-                roc_path = _MR / "roc_curve_test.png"
+                roc_path = MODEL_ARTEFACTS_DIR / "roc_curve_test.png"
                 fig_roc.tight_layout()
                 fig_roc.savefig(roc_path)
                 plt.close(fig_roc)
@@ -1014,9 +740,8 @@ def run():
                 ax_pr.set_ylabel("Precision")
                 ax_pr.set_title("Precision-Recall Curve (micro)")
                 ax_pr.legend(loc="lower left", fontsize=8)
-                from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
-                pr_path = _MR / "pr_curve_test.png"
+                pr_path = MODEL_ARTEFACTS_DIR / "pr_curve_test.png"
                 fig_pr.tight_layout()
                 fig_pr.savefig(pr_path)
                 plt.close(fig_pr)
@@ -1030,9 +755,8 @@ def run():
             mis_samples = X_test.iloc[mis_idx].copy()
             mis_samples["true"] = y_test[mis_idx]
             mis_samples["pred"] = test_preds[mis_idx]
-            from scripts.config import MODEL_ARTEFACTS_DIR as _MR
 
-            mis_path = _MR / "misclassified_samples_test.csv"
+            mis_path = MODEL_ARTEFACTS_DIR / "misclassified_samples_test.csv"
             mis_samples.head(200).to_csv(mis_path, index=False)
             log_artifact_safe(mis_path, "misclassified_samples")
 
@@ -1051,9 +775,7 @@ def run():
             "duration_sec": duration,
         }
         # Атомарная запись метаданных
-        from scripts.config import MODEL_ARTEFACTS_DIR as _MR
-
-        _meta_path = _MR / "best_model_meta.json"
+        _meta_path = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
         _meta_tmp = _meta_path.with_suffix(".json.tmp")
         with open(_meta_tmp, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
