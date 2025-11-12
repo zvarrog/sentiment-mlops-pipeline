@@ -189,10 +189,19 @@ def validate_data_quality(
                 if null_or_empty > 0:
                     errors.append(f"Колонка '{col}': {null_or_empty} пустых значений")
 
+            # Проверка на бессмысленный контент
+            valid_texts = text_data[~df[col].isnull()]
+            if len(valid_texts) > 0:
+                stripped = valid_texts.str.strip()
+                empty_after_strip = (stripped == "").sum()
+                if empty_after_strip > 0:
+                    errors.append(
+                        f"Колонка '{col}': {empty_after_strip} текстов, содержащих только пробелы"
+                    )
+
             min_len = constraints.get("min_length", 0)
             max_len = constraints.get("max_length", float("inf"))
 
-            valid_texts = text_data[~df[col].isnull()]
             if len(valid_texts) > 0:
                 lengths = valid_texts.str.len()
                 too_short = (lengths < min_len).sum()

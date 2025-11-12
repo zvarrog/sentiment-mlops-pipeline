@@ -428,3 +428,107 @@ MIT
 ## Контакты
 
 Для вопросов и предложений: [ваш email]
+
+```
+sentiment-mlops-pipeline
+├─ .dockerignore
+├─ .env
+├─ .ruff.toml
+├─ airflow
+│  └─ dags
+│     └─ kindle_pipeline.py
+├─ artefacts
+│  ├─ best_model.joblib
+│  ├─ drift_artefacts
+│  │  ├─ drift_report.csv
+│  │  ├─ drift_report.json
+│  │  └─ plots
+│  │     ├─ avg_word_length_hist.png
+│  │     ├─ caps_ratio_hist.png
+│  │     ├─ exclamation_count_hist.png
+│  │     ├─ item_avg_len_hist.png
+│  │     ├─ item_review_count_hist.png
+│  │     ├─ kindle_freq_hist.png
+│  │     ├─ question_count_hist.png
+│  │     ├─ sentiment_hist.png
+│  │     ├─ text_len_hist.png
+│  │     ├─ user_avg_len_hist.png
+│  │     ├─ user_review_count_hist.png
+│  │     └─ word_count_hist.png
+│  └─ model_artefacts
+│     ├─ baseline_numeric_stats.json
+│     ├─ best_model_meta.json
+│     ├─ classification_report_test.txt
+│     ├─ confusion_matrix_test.png
+│     ├─ feature_importances.json
+│     ├─ meta_hist_gb.json
+│     ├─ meta_logreg.json
+│     ├─ meta_mlp.json
+│     ├─ meta_rf.json
+│     ├─ misclassified_samples_test.csv
+│     ├─ model_hist_gb.joblib
+│     ├─ model_logreg.joblib
+│     ├─ model_mlp.joblib
+│     ├─ model_rf.joblib
+│     ├─ model_schema.json
+│     ├─ optuna_top_trials.csv
+│     ├─ pr_curve_test.png
+│     └─ roc_curve_test.png
+├─ docker-compose.yml
+├─ Dockerfile.airflow
+├─ Dockerfile.api
+├─ examples
+│  ├─ request_batch.py
+│  └─ request_simple.py
+├─ grafana
+│  └─ provisioning
+│     ├─ dashboards
+│     │  ├─ api_slo.json
+│     │  └─ default.yml
+│     └─ datasources
+│        └─ prometheus.yml
+├─ postgres-init
+│  ├─ 00-init-multiple-databases.sh
+│  ├─ 01-init-airflow-meta.sql
+│  └─ 02-init-metrics-db.sql
+├─ prometheus.yml
+├─ README.md
+├─ requirements.api.txt
+├─ requirements.txt
+├─ scripts
+│  ├─ api_service.py
+│  ├─ config.py
+│  ├─ constants.py
+│  ├─ data_validation.py
+│  ├─ download.py
+│  ├─ drift_injection.py
+│  ├─ drift_monitor.py
+│  ├─ feature_contract.py
+│  ├─ logging_config.py
+│  ├─ models
+│  │  ├─ distilbert.py
+│  │  └─ kinds.py
+│  ├─ model_registry.py
+│  ├─ postprocessing.py
+│  ├─ spark_process.py
+│  ├─ text_features.py
+│  ├─ train.py
+│  ├─ train_modules
+│  │  ├─ data_loading.py
+│  │  ├─ evaluation.py
+│  │  ├─ feature_space.py
+│  │  ├─ models.py
+│  │  ├─ pipeline_builders.py
+│  │  ├─ text_analyzers.py
+│  │  └─ __init__.py
+│  ├─ utils.py
+│  └─ __init__.py
+└─ tests
+   ├─ conftest.py
+   ├─ requirements.txt
+   ├─ test_api_service.py
+   ├─ test_core_modules.py
+   ├─ test_edge_cases.py
+   └─ test_integration.py
+
+```

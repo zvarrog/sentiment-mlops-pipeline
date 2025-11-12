@@ -1,8 +1,4 @@
-"""Строители пайплайнов для разных типов моделей.
-
-Паттерн Builder/Factory для инкапсуляции логики создания пайплайнов.
-Каждый билдер отвечает за конфигурацию конкретного типа модели.
-"""
+"""Строители пайплайнов для разных типов моделей."""
 
 from abc import ABC, abstractmethod
 
@@ -17,64 +13,26 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from scripts.config import (
-    FORCE_SVD_THRESHOLD_MB,
-    SEED,
-    SVD_ESTIMATION_AVG_TERMS,
-    SVD_ESTIMATION_BIGRAM_COEF,
-    TRAIN_DEVICE,
-    log,
-)
+from scripts.config import SEED, TRAIN_DEVICE
+from scripts.constants import NUMERIC_COLS
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
-from scripts.train_modules.feature_space import NUMERIC_COLS, DenseTransformer
+from scripts.train_modules.feature_space import DenseTransformer
 from scripts.train_modules.models import SimpleMLP
-
-
-def make_tfidf_analyzer(use_stemming: bool):
-    if not use_stemming:
-        return "word"
-
-    from nltk.stem.porter import PorterStemmer
-
-    stemmer = PorterStemmer()
-
-    def stemmed_analyzer(doc: str) -> list[str]:
-        return [stemmer.stem(w) for w in doc.split()]
-
-    return stemmed_analyzer
+from scripts.train_modules.text_analyzers import make_tfidf_analyzer
 
 
 class PipelineBuilder(ABC):
     def __init__(self, trial: optuna.Trial):
-        """Инициализирует строитель с trial Optuna.
-
-        Args:
-            trial: Объект trial для предложения гиперпараметров.
-        """
         self.trial = trial
 
     @abstractmethod
     def build(self) -> Pipeline:
-        """Создаёт и возвращает готовый Pipeline для модели.
-
-        Returns:
-            Настроенный sklearn Pipeline.
-        """
+        pass
 
     def _build_preprocessor(
-        self, use_stemming: bool, text_max_features: int, force_svd: bool = False
+        self, use_stemming: bool, text_max_features: int
     ) -> ColumnTransformer:
-        """Создаёт препроцессор с TF-IDF и числовыми признаками.
-
-        Args:
-            use_stemming: Использовать ли стемминг в TF-IDF.
-            text_max_features: Максимальное количество признаков TF-IDF.
-            force_svd: Принудительно использовать SVD даже без оптимизации.
-
-        Returns:
-            ColumnTransformer с текстовым и числовым пайплайнами.
-        """
         tfidf = TfidfVectorizer(
             max_features=text_max_features,
             ngram_range=(1, 2),
@@ -83,39 +41,11 @@ class PipelineBuilder(ABC):
             analyzer=make_tfidf_analyzer(use_stemming),
         )
 
-        # Логика SVD
-        use_svd = force_svd
-        svd_components = None
-
-        if not force_svd:
-            n_samples_est = int(self.trial.user_attrs.get("n_train_samples", 20000))
-            estimated_nnz = (
-                n_samples_est * SVD_ESTIMATION_AVG_TERMS * SVD_ESTIMATION_BIGRAM_COEF
-            )
-            estimated_size_mb = (estimated_nnz * 4) / (1024 * 1024)
-            auto_force_svd = estimated_size_mb > FORCE_SVD_THRESHOLD_MB
-
-            if auto_force_svd:
-                log.warning(
-                    "Принудительно включаю SVD: оценка памяти TF-IDF ~ %.1f MB (порог=%d MB, n≈%d, terms≈%d)",
-                    estimated_size_mb,
-                    FORCE_SVD_THRESHOLD_MB,
-                    n_samples_est,
-                    SVD_ESTIMATION_AVG_TERMS,
-                )
-                use_svd = True
-                svd_components = self.trial.suggest_int(
-                    "svd_components", 20, 100, step=20
-                )
-            else:
-                use_svd = self.trial.suggest_categorical("use_svd", [False, True])
-                if use_svd:
-                    svd_components = self.trial.suggest_int(
-                        "svd_components", 20, 100, step=20
-                    )
-
+        use_svd = self.trial.suggest_categorical("use_svd", [False, True])
         text_steps = [("tfidf", tfidf)]
-        if use_svd and svd_components is not None:
+
+        if use_svd:
+            svd_components = self.trial.suggest_int("svd_components", 20, 100, step=20)
             text_steps.append(
                 ("svd", TruncatedSVD(n_components=svd_components, random_state=SEED))
             )
@@ -148,14 +78,7 @@ class PipelineBuilder(ABC):
 
 
 class DistilBertBuilder(PipelineBuilder):
-    """Строитель для DistilBERT классификатора."""
-
     def build(self) -> Pipeline:
-        """Создаёт Pipeline с DistilBERT моделью.
-
-        Returns:
-            Pipeline содержащий только DistilBERT классификатор.
-        """
         from scripts.config import DISTILBERT_MAX_EPOCHS, DISTILBERT_MIN_EPOCHS
 
         epochs = self.trial.suggest_int(
@@ -176,31 +99,23 @@ class DistilBertBuilder(PipelineBuilder):
 
 
 class LogRegBuilder(PipelineBuilder):
-    """Строитель для логистической регрессии."""
-
     def __init__(self, trial: optuna.Trial, fixed_solver: str | None = None):
-        """Инициализирует строитель LogReg.
-
-        Args:
-            trial: Объект trial для предложения гиперпараметров.
-            fixed_solver: Фиксированный солвер (для повторных запусков).
-        """
         super().__init__(trial)
         self.fixed_solver = fixed_solver
 
     def build(self) -> Pipeline:
-        """Создаёт Pipeline с логистической регрессией.
-
-        Returns:
-            Pipeline с препроцессором и LogisticRegression (без SVD).
-        """
-        from scripts.config import get_tfidf_max_features_range
+        from scripts.config import (
+            TFIDF_MAX_FEATURES_MAX,
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_STEP,
+        )
 
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
-        n_samples = int(self.trial.user_attrs.get("n_train_samples", 20000))
-        min_f, max_f, step_f = get_tfidf_max_features_range(n_samples)
         text_max_features = self.trial.suggest_int(
-            "tfidf_max_features", min_f, max_f, step=step_f
+            "tfidf_max_features",
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_MAX,
+            step=TFIDF_MAX_FEATURES_STEP,
         )
 
         tfidf = TfidfVectorizer(
@@ -239,7 +154,7 @@ class LogRegBuilder(PipelineBuilder):
 
         steps = [("pre", preprocessor)]
 
-        C = self.trial.suggest_float("logreg_C", 1e-4, 1e2, log=True)
+        c_value = self.trial.suggest_float("logreg_C", 1e-4, 1e2, log=True)
         if self.fixed_solver is not None:
             solver = self.trial.suggest_categorical(
                 "logreg_solver", [self.fixed_solver]
@@ -259,8 +174,7 @@ class LogRegBuilder(PipelineBuilder):
 
         clf = LogisticRegression(
             max_iter=2500,
-            C=C,
-            class_weight="balanced",
+            C=c_value,
             solver=solver,
             penalty=penalty,
         )
@@ -269,21 +183,19 @@ class LogRegBuilder(PipelineBuilder):
 
 
 class RandomForestBuilder(PipelineBuilder):
-    """Строитель для Random Forest."""
-
     def build(self) -> Pipeline:
-        """Создаёт Pipeline с Random Forest классификатором.
-
-        Returns:
-            Pipeline с препроцессором и RandomForestClassifier.
-        """
-        from scripts.config import get_tfidf_max_features_range
+        from scripts.config import (
+            TFIDF_MAX_FEATURES_MAX,
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_STEP,
+        )
 
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
-        n_samples = int(self.trial.user_attrs.get("n_train_samples", 20000))
-        min_f, max_f, step_f = get_tfidf_max_features_range(n_samples)
         text_max_features = self.trial.suggest_int(
-            "tfidf_max_features", min_f, max_f, step=step_f
+            "tfidf_max_features",
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_MAX,
+            step=TFIDF_MAX_FEATURES_STEP,
         )
 
         preprocessor = self._build_preprocessor(use_stemming, text_max_features)
@@ -300,7 +212,6 @@ class RandomForestBuilder(PipelineBuilder):
             min_samples_split=min_samples_split,
             bootstrap=bootstrap,
             n_jobs=-1,
-            class_weight="balanced_subsample",
             random_state=SEED,
         )
         steps.append(("model", clf))
@@ -308,21 +219,19 @@ class RandomForestBuilder(PipelineBuilder):
 
 
 class MLPBuilder(PipelineBuilder):
-    """Строитель для многослойного перцептрона."""
-
     def build(self) -> Pipeline:
-        """Создаёт Pipeline с SimpleMLP моделью.
-
-        Returns:
-            Pipeline с препроцессором, DenseTransformer и SimpleMLP.
-        """
-        from scripts.config import get_tfidf_max_features_range
+        from scripts.config import (
+            TFIDF_MAX_FEATURES_MAX,
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_STEP,
+        )
 
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
-        n_samples = int(self.trial.user_attrs.get("n_train_samples", 20000))
-        min_f, max_f, step_f = get_tfidf_max_features_range(n_samples)
         text_max_features = self.trial.suggest_int(
-            "tfidf_max_features", min_f, max_f, step=step_f
+            "tfidf_max_features",
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_MAX,
+            step=TFIDF_MAX_FEATURES_STEP,
         )
 
         preprocessor = self._build_preprocessor(use_stemming, text_max_features)
@@ -339,21 +248,19 @@ class MLPBuilder(PipelineBuilder):
 
 
 class HistGBBuilder(PipelineBuilder):
-    """Строитель для Histogram-based Gradient Boosting."""
-
     def build(self) -> Pipeline:
-        """Создаёт Pipeline с HistGradientBoostingClassifier.
-
-        Returns:
-            Pipeline с препроцессором, DenseTransformer и HistGradientBoostingClassifier.
-        """
-        from scripts.config import get_tfidf_max_features_range
+        from scripts.config import (
+            TFIDF_MAX_FEATURES_MAX,
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_STEP,
+        )
 
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
-        n_samples = int(self.trial.user_attrs.get("n_train_samples", 20000))
-        min_f, max_f, step_f = get_tfidf_max_features_range(n_samples)
         text_max_features = self.trial.suggest_int(
-            "tfidf_max_features", min_f, max_f, step=step_f
+            "tfidf_max_features",
+            TFIDF_MAX_FEATURES_MIN,
+            TFIDF_MAX_FEATURES_MAX,
+            step=TFIDF_MAX_FEATURES_STEP,
         )
 
         preprocessor = self._build_preprocessor(use_stemming, text_max_features)
@@ -377,34 +284,20 @@ class HistGBBuilder(PipelineBuilder):
 
 
 class ModelBuilderFactory:
-    """Фабрика для создания строителей пайплайнов."""
-
     @staticmethod
     def get_builder(
         model_kind: ModelKind, trial: optuna.Trial, fixed_solver: str | None = None
     ) -> PipelineBuilder:
-        """Возвращает строитель для указанного типа модели.
-
-        Args:
-            model_kind: Тип модели из ModelKind enum.
-            trial: Объект trial для предложения гиперпараметров.
-            fixed_solver: Фиксированный солвер (только для LogReg).
-
-        Returns:
-            Экземпляр соответствующего строителя.
-
-        Raises:
-            ValueError: Если model_kind неизвестен.
-        """
-        if model_kind is ModelKind.distilbert:
-            return DistilBertBuilder(trial)
-        if model_kind is ModelKind.logreg:
-            return LogRegBuilder(trial, fixed_solver)
-        if model_kind is ModelKind.rf:
-            return RandomForestBuilder(trial)
-        if model_kind is ModelKind.mlp:
-            return MLPBuilder(trial)
-        if model_kind is ModelKind.hist_gb:
-            return HistGBBuilder(trial)
-
-        raise ValueError(f"Неизвестный тип модели: {model_kind}")
+        match model_kind:
+            case ModelKind.distilbert:
+                return DistilBertBuilder(trial)
+            case ModelKind.logreg:
+                return LogRegBuilder(trial, fixed_solver)
+            case ModelKind.rf:
+                return RandomForestBuilder(trial)
+            case ModelKind.mlp:
+                return MLPBuilder(trial)
+            case ModelKind.hist_gb:
+                return HistGBBuilder(trial)
+            case _:
+                raise ValueError(f"Неизвестный тип модели: {model_kind}")

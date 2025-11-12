@@ -1,7 +1,7 @@
-"""Параметризованный DAG для обработки Kindle reviews с поддержкой режимов:
-- standard: последовательная обработка с одной моделью (Optuna HPO)
-- monitored: стандартный режим + логирование метрик в PostgreSQL
-- parallel: параллельное обучение нескольких моделей и выбор лучшей
+"""Параметризованный DAG для обработки Kindle reviews с поддержкой:
+- последовательного обучения с Optuna HPO
+- параллельного обучения нескольких моделей
+- опционального мониторинга метрик в PostgreSQL
 """
 
 from datetime import datetime
@@ -12,21 +12,17 @@ from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 from airflow import DAG
+from scripts.utils import get_flag, get_value
 
 _DOC = """Пайплайн для обработки и обучения модели на Kindle отзывах.
 
-Режимы работы (параметр execution_mode):
-- standard: базовый режим с Optuna оптимизацией (по умолчанию)
-- monitored: + логирование метрик задач в PostgreSQL
-- parallel: параллельное обучение моделей и выбор лучшей
-
 Управление через параметры DAG:
-- execution_mode: режим выполнения (standard/monitored/parallel)
+- parallel: параллельное обучение моделей (по умолчанию False)
+- enable_monitoring: логирование метрик в PostgreSQL (по умолчанию False)
 - force_download/force_process/force_train: флаги форсирования этапов
 - inject_synthetic_drift: инъекция синтетического дрейфа
 - run_drift_monitor: запуск мониторинга дрейфа
 - run_data_validation: валидация данных
-- raw_data_dir, processed_data_dir, model_dir: пути к директориям
 """
 
 default_args = {
@@ -34,133 +30,9 @@ default_args = {
 }
 
 
-def _to_bool(x, default: bool = False) -> bool:
-    if x is None:
-        return bool(default)
-    if isinstance(x, bool):
-        return x
-    if isinstance(x, (int, float)):
-        return bool(x)
-    if isinstance(x, str):
-        return x.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(x)
-
-
-def _get_value(context, name: str, default: str | None = None) -> str:
-    """Получить строковый параметр запуска.
-
-    Порядок источников:
-    1) context['params'] — если доступен (UI/CLI override, где поддерживается)
-    2) context['dag_run'].conf — значения запуска из формы UI/CLI
-    3) dag.params — дефолтные параметры DAG
-    4) default — значение по умолчанию из вызова
-    """
-    params = context.get("params") or {}
-    if name in params:
-        return str(params.get(name))
-    dag_run = context.get("dag_run")
-    if getattr(dag_run, "conf", None) and name in dag_run.conf:
-        return str(dag_run.conf.get(name))
-    dag = context.get("dag")
-    if dag and name in getattr(dag, "params", {}):
-        return str(dag.params.get(name))
-    return str(default or "")
-
-
-def _get_flag(context, name: str, default: bool = False) -> bool:
-    """Получить булев флаг запуска с тем же порядком источников."""
-    params = context.get("params") or {}
-    if name in params:
-        return _to_bool(params.get(name), default)
-    dag_run = context.get("dag_run")
-    if getattr(dag_run, "conf", None) and name in dag_run.conf:
-        return _to_bool(dag_run.conf.get(name), default)
-    dag = context.get("dag")
-    if dag and name in getattr(dag, "params", {}):
-        return _to_bool(dag.params.get(name), default)
-    return bool(default)
-
-
-def _setup_env(**context):
-    import os
-    from pathlib import Path
-
-    base = os.environ.get("AIRFLOW_HOME", "/opt/airflow")
-
-    def _abs(p: str) -> str:
-        pp = Path(p)
-        return str(pp) if pp.is_absolute() else str((Path(base) / pp).resolve())
-
-    raw_p = _get_value(context, "raw_data_dir", "data/raw")
-    proc_p = _get_value(context, "processed_data_dir", "data/processed")
-    model_dir_p = _get_value(context, "model_dir", "artefacts")
-
-    os.environ["RAW_DATA_DIR"] = _abs(raw_p)
-    os.environ["PROCESSED_DATA_DIR"] = _abs(proc_p)
-    os.environ["MODEL_DIR"] = _abs(model_dir_p)
-    os.environ["MODEL_ARTEFACTS_DIR"] = _abs(
-        _get_value(
-            context,
-            "model_artefacts_dir",
-            str(Path(model_dir_p) / "model_artefacts"),
-        )
-    )
-    os.environ["DRIFT_ARTEFACTS_DIR"] = _abs(
-        _get_value(
-            context, "drift_artefacts_dir", str(Path(model_dir_p) / "drift_artefacts")
-        )
-    )
-
-    os.environ["FORCE_DOWNLOAD"] = str(int(_get_flag(context, "force_download", False)))
-    os.environ["FORCE_PROCESS"] = str(int(_get_flag(context, "force_process", False)))
-    os.environ["FORCE_TRAIN"] = str(int(_get_flag(context, "force_train", False)))
-    os.environ["KEEP_CANDIDATES"] = str(
-        int(_get_flag(context, "keep_candidates", False))
-    )
-    os.environ["INJECT_SYNTHETIC_DRIFT"] = str(
-        int(_get_flag(context, "inject_synthetic_drift", False))
-    )
-    os.environ["RUN_DRIFT_MONITOR"] = str(
-        int(_get_flag(context, "run_drift_monitor", False))
-    )
-    os.environ["RUN_DATA_VALIDATION"] = str(
-        int(_get_flag(context, "run_data_validation", True))
-    )
-
-    try:
-        from airflow.models import Variable
-
-        optuna_storage = Variable.get(
-            "OPTUNA_STORAGE",
-            default_var=os.getenv(
-                "OPTUNA_STORAGE",
-                "postgresql+psycopg2://admin:admin@postgres:5432/optuna",
-            ),
-        )
-    except Exception:
-        optuna_storage = os.getenv(
-            "OPTUNA_STORAGE",
-            "postgresql+psycopg2://admin:admin@postgres:5432/optuna",
-        )
-
-    os.environ["OPTUNA_STORAGE"] = optuna_storage
-
-    import importlib
-    import sys
-
-    if "scripts.config" in sys.modules:
-        importlib.reload(sys.modules["scripts.config"])
-
-
-# Monitoring callbacks для режима monitored
-def log_task_duration(**context):
+def log_task_metric(status: str, **context):
     ti: TaskInstance = context["task_instance"]
-
-    if not ti.duration:
-        return
-
-    duration = ti.duration
-    status = ti.state
+    duration = ti.duration if ti.duration else 0
 
     try:
         from scripts.logging_config import setup_auto_logging
@@ -183,38 +55,20 @@ def log_task_duration(**context):
             _log.warning(f"Не удалось залогировать метрику задачи: {e}")
 
 
-def log_task_failure(**context):
+def log_task_duration(**context):
     ti: TaskInstance = context["task_instance"]
+    status = ti.state if ti.state else "success"
+    log_task_metric(status=status, **context)
 
-    try:
-        from scripts.logging_config import setup_auto_logging
 
-        _log = setup_auto_logging()
-        duration = ti.duration if ti.duration else 0
-
-        pg_hook = PostgresHook(postgres_conn_id="metrics_db")
-        pg_hook.run(
-            """
-            INSERT INTO task_metrics (dag_id, task_id, execution_date, duration_sec, status)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (dag_id, task_id, execution_date)
-            DO UPDATE SET duration_sec = EXCLUDED.duration_sec, status = EXCLUDED.status
-            """,
-            parameters=(ti.dag_id, ti.task_id, ti.execution_date, duration, "failed"),
-        )
-    except Exception as e:
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            _log.warning(f"Не удалось залогировать ошибку задачи: {e}")
+def log_task_failure(**context):
+    log_task_metric(status="failed", **context)
 
 
 # Функции задачи
 
 
 def _task_download(**context):
-    _setup_env(**context)
-
     from scripts.download import main as download_main
     from scripts.logging_config import setup_auto_logging
 
@@ -227,16 +81,13 @@ def _task_download(**context):
 
 
 def _task_validate_data(**context):
-    _setup_env(**context)
-    import os
-
     from scripts.logging_config import setup_auto_logging
 
     log = setup_auto_logging()
 
-    if os.environ.get("RUN_DATA_VALIDATION", "1") != "1":
+    if not get_flag(context, "run_data_validation", True):
         log.info("Валидация пропущена: RUN_DATA_VALIDATION=0")
-        return "validation_skipped"
+        return
 
     log.info("Валидация данных")
 
@@ -247,11 +98,9 @@ def _task_validate_data(**context):
         raise ValueError("Ошибки валидации данных")
 
     log.info("Валидация успешна")
-    return "validation_ok"
 
 
 def _task_inject_drift(**context):
-    _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
 
     log = setup_auto_logging()
@@ -269,7 +118,6 @@ def _task_inject_drift(**context):
 
 
 def _task_process(**context):
-    _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
     from scripts.spark_process import TEST_PATH, TRAIN_PATH, VAL_PATH, process_data
 
@@ -283,25 +131,26 @@ def _task_process(**context):
 
 
 def _task_drift_monitor(**context):
-    _setup_env(**context)
-    import os
     from pathlib import Path
 
     from scripts.logging_config import setup_auto_logging
 
     log = setup_auto_logging()
 
-    if os.environ.get("RUN_DRIFT_MONITOR", "0") != "1":
+    if not get_flag(context, "run_drift_monitor", False):
         log.info("Мониторинг дрейфа пропущен: RUN_DRIFT_MONITOR=0")
-        return "drift_monitor_skipped"
+        return
 
     # Единый источник путей — scripts.config (SSoT)
     from scripts.config import DRIFT_ARTEFACTS_DIR, PROCESSED_DATA_DIR
 
-    test_parquet = Path(PROCESSED_DATA_DIR) / "test.parquet"
+    proc_dir_override = get_value(
+        context, "processed_data_dir", str(PROCESSED_DATA_DIR)
+    )
+    test_parquet = Path(proc_dir_override) / "test.parquet"
     if not test_parquet.exists():
         log.warning("Файл test.parquet не найден")
-        return "no_data"
+        return
 
     try:
         from scripts.drift_monitor import run_drift_monitor
@@ -331,7 +180,6 @@ def _task_drift_monitor(**context):
 
 def _task_train_standard(**context):
     """Стандартное обучение с Optuna оптимизацией."""
-    _setup_env(**context)
     from scripts.logging_config import setup_auto_logging
     from scripts.train import run
 
@@ -399,129 +247,58 @@ def _log_model_metrics_to_db(**context):
 
 
 def _train_model_parallel(model_kind: str, **context):
-    """Обучение одной модели для parallel режима."""
-    _setup_env(**context)
-    import json
-    import time
+    """Обучение одной модели через прямой вызов run()."""
+    import os
     from pathlib import Path
 
-    import joblib
-    import mlflow
-    import optuna
-    from mlflow.exceptions import MlflowException
-    from mlflow.tracking import MlflowClient
-
-    # Единый источник настроек — scripts.config (SSoT)
-    from scripts.config import (
-        MLFLOW_TRACKING_URI,
-        MODEL_ARTEFACTS_DIR,
-        OPTUNA_N_TRIALS,
-        OPTUNA_STORAGE,
-    )
+    from scripts.config import MODEL_ARTEFACTS_DIR
     from scripts.logging_config import setup_auto_logging
-    from scripts.models.kinds import ModelKind
-    from scripts.train import build_pipeline, compute_metrics, objective
-    from scripts.train_modules.data_loading import load_splits
-    from scripts.train_modules.feature_space import NUMERIC_COLS
 
     log = setup_auto_logging()
     log.info(f"Обучение модели: {model_kind}")
 
-    x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
+    # Переопределяем через переменные окружения для изоляции
+    old_model_kinds = os.environ.get("SELECTED_MODEL_KINDS")
+    old_force_train = os.environ.get("FORCE_TRAIN")
 
-    model_enum = ModelKind(model_kind)
-    study_name = f"parallel_{model_kind}_{int(time.time())}"
-
-    # Безопасная инициализация эксперимента MLflow
-    exp_name = "kindle_parallel_experiment"
     try:
-        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-        client = MlflowClient()
-        existing = client.get_experiment_by_name(exp_name)
-        if existing is None:
-            try:
-                client.create_experiment(exp_name)
-            except MlflowException as e:
-                # Два воркера могут создать эксперимент одновременно
-                if "already exists" not in str(e).lower():
-                    raise
-        mlflow.set_experiment(exp_name)
-    except Exception as e:
-        log.warning(f"Не удалось инициализировать MLflow эксперимент: {e}")
-        raise
+        os.environ["SELECTED_MODEL_KINDS"] = model_kind
+        os.environ["FORCE_TRAIN"] = "1"
 
-    with mlflow.start_run(run_name=f"train_{model_kind}"):
-        mlflow.log_param("model", model_kind)
+        from scripts.train import run
 
-        study = optuna.create_study(
-            direction="maximize",
-            storage=OPTUNA_STORAGE,
-            study_name=study_name,
-            load_if_exists=False,
-        )
-
-        def opt_obj(trial):
-            return objective(trial, model_enum, x_train, y_train, x_val, y_val)
-
-        n_trials = min(OPTUNA_N_TRIALS, 10)
-        study.optimize(opt_obj, n_trials=n_trials, timeout=300, show_progress_bar=False)
-
-        if not study.best_trial or study.best_trial.value is None:
-            raise ValueError(f"Не удалось обучить модель {model_kind}")
-
-        best_params = study.best_trial.params
-
-        fixed_trial = optuna.trial.FixedTrial(best_params)
-        fixed_trial.set_user_attr(
-            "numeric_cols", [c for c in NUMERIC_COLS if c in x_train.columns]
-        )
-
-        pipeline = build_pipeline(fixed_trial, model_enum)
-
-        # DistilBERT работает только с текстом, остальные модели — с полным DataFrame
-        if model_enum == ModelKind.distilbert:
-            pipeline.fit(x_train["reviewText"], y_train)
-            val_preds = pipeline.predict(x_val["reviewText"])
-            test_preds = pipeline.predict(x_test["reviewText"])
+        run()
+        log.info(f"Модель {model_kind} успешно обучена")
+    finally:
+        # Восстанавливаем старые значения
+        if old_model_kinds is not None:
+            os.environ["SELECTED_MODEL_KINDS"] = old_model_kinds
         else:
-            pipeline.fit(x_train, y_train)
-            val_preds = pipeline.predict(x_val)
-            test_preds = pipeline.predict(x_test)
+            os.environ.pop("SELECTED_MODEL_KINDS", None)
 
-        val_metrics = compute_metrics(y_val, val_preds)
-        test_metrics = compute_metrics(y_test, test_preds)
+        if old_force_train is not None:
+            os.environ["FORCE_TRAIN"] = old_force_train
+        else:
+            os.environ.pop("FORCE_TRAIN", None)
 
-        mlflow.log_metrics({f"val_{k}": v for k, v in val_metrics.items()})
-        mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
+    import json
 
-        model_path = Path(MODEL_ARTEFACTS_DIR) / f"model_{model_kind}.joblib"
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(pipeline, model_path)
+    meta_path = Path(MODEL_ARTEFACTS_DIR) / f"meta_{model_kind}.json"
+    model_path = Path(MODEL_ARTEFACTS_DIR) / f"model_{model_kind}.joblib"
 
-        meta = {
-            "model": model_kind,
-            "best_params": best_params,
-            "val_f1_macro": val_metrics["f1_macro"],
-            "test_f1_macro": test_metrics["f1_macro"],
-            "val_accuracy": val_metrics["accuracy"],
-            "test_accuracy": test_metrics["accuracy"],
-        }
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Метаданные модели не найдены: {meta_path}")
 
-        meta_path = Path(MODEL_ARTEFACTS_DIR) / f"meta_{model_kind}.json"
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
 
-        log.info(
-            f"Модель {model_kind} обучена: val_f1={val_metrics['f1_macro']:.4f}, test_f1={test_metrics['f1_macro']:.4f}"
-        )
-
-        return {
-            "model": model_kind,
-            "val_f1_macro": val_metrics["f1_macro"],
-            "test_f1_macro": test_metrics["f1_macro"],
-            "meta_path": str(meta_path),
-            "model_path": str(model_path),
-        }
+    return {
+        "model": model_kind,
+        "val_f1_macro": meta.get("val_f1_macro", 0.0),
+        "test_f1_macro": meta.get("test_f1_macro", 0.0),
+        "meta_path": str(meta_path),
+        "model_path": str(model_path),
+    }
 
 
 @task
@@ -533,10 +310,8 @@ def train_one(model_kind: str, **context):
 @task
 def select_best(results: list[dict], **context):
     """Выбирает лучшую модель из результатов динамически обученных моделей."""
-    _setup_env(**context)
     import contextlib
     import json
-    import os
     import shutil
     from datetime import datetime
     from pathlib import Path
@@ -630,12 +405,7 @@ def select_best(results: list[dict], **context):
         log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
 
     try:
-        keep = os.environ.get("KEEP_CANDIDATES", "0").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        keep = get_flag(context, "keep_candidates", False)
         arte_dir = Path(MODEL_ARTEFACTS_DIR)
         best_kind = str(best["model"]).strip()
         model_files = list(arte_dir.glob("model_*.joblib"))
@@ -680,8 +450,8 @@ with DAG(
     description=_DOC,
     tags=["sentiment", "ml", "unified"],
     params={
-        # Флаг параллельного обучения (UI-параметр)
         "parallel": False,
+        "enable_monitoring": False,
         "keep_candidates": False,
         "force_download": False,
         "force_process": False,
@@ -689,27 +459,20 @@ with DAG(
         "run_data_validation": True,
         "inject_synthetic_drift": False,
         "run_drift_monitor": False,
-        "raw_data_dir": "data/raw",
-        "processed_data_dir": "data/processed",
-        "model_dir": "artefacts",
-        "model_artefacts_dir": "artefacts/model_artefacts",
-        "drift_artefacts_dir": "artefacts/drift_artefacts",
     },
 ) as dag:
-
-    def _get_callbacks(context):
-        """Возвращает callbacks в зависимости от режима."""
-        mode = _get_value(context, "execution_mode", "standard")
-        if mode == "monitored":
-            return {
-                "on_success_callback": log_task_duration,
-                "on_failure_callback": log_task_failure,
-            }
-        return {}
+    enable_monitoring = get_flag(dag.params, "enable_monitoring", False)
+    callbacks = {}
+    if enable_monitoring:
+        callbacks = {
+            "on_success_callback": log_task_duration,
+            "on_failure_callback": log_task_failure,
+        }
 
     download = PythonOperator(
         task_id="download",
         python_callable=_task_download,
+        **callbacks,
     )
 
     validate_data = PythonOperator(
@@ -745,28 +508,9 @@ with DAG(
     _parallel_branch_targets = ["train_one"]
 
     def _branch_by_mode(**context):
-        """Ветвление по режиму выполнения.
-
-        Приоритет выбора параллельности:
-        1) UI-параметр DAG: params.parallel (bool)
-        2) Переменная окружения PARALLEL (bool: "1"|"true"|...)
-        3) Значение по умолчанию: standard
-        """
-        import os
-
-        from scripts.logging_config import setup_auto_logging
-
-        parallel_flag = _get_flag(context, "parallel", False)
-        if not parallel_flag:
-            parallel_env = os.getenv("PARALLEL", "0").strip()
-            parallel_flag = parallel_env.lower() in {"1", "true", "yes", "on"}
-
-        log = setup_auto_logging()
-        log.info("Выбран режим: %s", "parallel" if parallel_flag else "standard")
-
-        if parallel_flag:
-            return _parallel_branch_targets
-        return ["train_standard"]
+        """Ветвление по флагу parallel."""
+        parallel_flag = get_flag(context, "parallel", False)
+        return _parallel_branch_targets if parallel_flag else ["train_standard"]
 
     branch = BranchPythonOperator(
         task_id="branch_by_mode",

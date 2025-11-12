@@ -1,20 +1,8 @@
-"""Общие функции обработки текста и извлечения признаков.
-
-Используется как в Spark (UDF), так и в Pandas (API) для синхронизации обработки.
-Все функции — чистые, работают с базовыми типами Python.
-"""
+"""Текстовые утилиты для чистки и простых признаков."""
 
 
 def clean_text(text: str, max_length: int = 5000) -> str:
-    """Нормализует текст: lowercase, удаление URL, пунктуации, лишних пробелов.
-
-    Args:
-        text: Исходный текст
-        max_length: Максимальная длина текста после обрезки
-
-    Returns:
-        Очищенный текст
-    """
+    """Быстрая нормализация: lower, удаление URL/не-букв, сжатие пробелов."""
     if not text or not isinstance(text, str):
         return ""
 
@@ -39,14 +27,7 @@ def clean_text(text: str, max_length: int = 5000) -> str:
 
 
 def calculate_sentiment(text: str) -> float:
-    """Вычисляет sentiment score с помощью TextBlob.
-
-    Args:
-        text: Текст для анализа
-
-    Returns:
-        Polarity от -1 (негативный) до +1 (позитивный)
-    """
+    """Полярность [-1..1] через TextBlob (короткий текст -> 0)."""
     if not text or len(text.strip()) < 3:
         return 0.0
 
@@ -61,17 +42,7 @@ def calculate_sentiment(text: str) -> float:
 
 
 def extract_text_features(text: str) -> dict[str, float]:
-    """Извлекает базовые текстовые признаки из сырого текста.
-
-    Признаки вычисляются ДО чистки текста для сохранения информации о пунктуации.
-
-    Args:
-        text: Исходный текст (сырой, до clean_text)
-
-    Returns:
-        Словарь с признаками: text_len, word_count, kindle_freq, exclamation_count,
-        caps_ratio, question_count
-    """
+    """Базовые признаки до чистки: длины, частоты, пунктуация."""
     if not text or not isinstance(text, str):
         return {
             "text_len": 0.0,
@@ -108,13 +79,5 @@ def extract_text_features(text: str) -> dict[str, float]:
 
 
 def calculate_avg_word_length(text_len: float, word_count: float) -> float:
-    """Вычисляет среднюю длину слова.
-
-    Args:
-        text_len: Длина текста в символах
-        word_count: Количество слов
-
-    Returns:
-        Средняя длина слова
-    """
+    """Средняя длина слова (text_len / word_count)."""
     return text_len / max(word_count, 1.0)

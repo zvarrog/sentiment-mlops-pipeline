@@ -6,37 +6,31 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pandas as pd
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from .config import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
-from .logging_config import setup_auto_logging
-from .retry_utils import retry_with_backoff
+from .logging_config import get_logger
 
 ZIP_FILENAME = RAW_DATA_DIR / "kindle-reviews.zip"
 CSV_PATH = RAW_DATA_DIR / CSV_NAME
 
-
-def remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
-    """Удаляет лишний первый столбец-индекс в CSV, если он присутствует."""
-    df = pd.read_csv(str(csv_path))
-    first_col = str(df.columns[0])
-
-    # Удаляем index-колонку с распространёнными именами
-    if first_col in ("", "Unnamed: 0", "_c0") or first_col.startswith("Unnamed"):
-        df = df.iloc[:, 1:]  # Удаляем первую колонку
-        df.to_csv(csv_path, index=False)
-        log.info(f"Удалён индекс-столбец '{first_col}' из {csv_path}")
+log = get_logger("download")
 
 
-# Используем централизованное логирование
-log = setup_auto_logging()
-
-
-@retry_with_backoff(
-    max_attempts=3, initial_delay=5.0, exceptions=(subprocess.CalledProcessError,)
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=5, max=60),
+    retry=retry_if_exception_type(subprocess.CalledProcessError),
 )
 def _download_with_retry() -> None:
     """Скачивание датасета с retry-логикой при ошибках сети."""
-    log.info(f"Скачивание датасета '{KAGGLE_DATASET}'...")
+    log.info("Скачивание датасета '%s'...", KAGGLE_DATASET)
     subprocess.run(
         [
             "kaggle",
@@ -55,25 +49,24 @@ def _download_with_retry() -> None:
 
 
 def main() -> Path:
-    """Основная процедура скачивания датасета Kaggle.
+    """Скачивание датасета Kaggle.
 
-    Возвращает абсолютный путь к CSV.
+    Returns:
+        Абсолютный путь к CSV
     """
     if CSV_PATH.exists() and not FORCE_DOWNLOAD:
         log.warning(
-            "%s уже существует в %s, пропуск скачивания. Для форсированного скачивания установите флаг FORCE_DOWNLOAD = True.",
+            "%s уже существует, пропуск скачивания. Для форсированного скачивания установите FORCE_DOWNLOAD=True",
             CSV_NAME,
-            RAW_DATA_DIR,
         )
         log.info("Абсолютный путь к CSV: %s", str(CSV_PATH.resolve()))
         return CSV_PATH.resolve()
 
-    # Гарантируем директорию
     try:
         RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     except PermissionError as e:
         log.error(
-            "Нет прав на создание каталога '%s': %s. Проверьте mонтирование volume и права на запись.",
+            "Нет прав на создание каталога '%s': %s. Проверьте монтирование volume и права на запись.",
             str(RAW_DATA_DIR),
             e,
         )
@@ -84,8 +77,10 @@ def main() -> Path:
         _download_with_retry()
     except subprocess.CalledProcessError as e:
         log.error(
-            "Ошибка при скачивании датасета через kaggle CLI: %s\nПроверьте наличие файла kaggle.json и доступ к API.\n"
-            "Если его нет, получите токен на https://www.kaggle.com/settings и поместите ~/.kaggle/kaggle.json.",
+            "Ошибка при скачивании датасета: %s\n"
+            "Проверьте наличие файла kaggle.json и доступ к API.\n"
+            "Если его нет, получите токен на https://www.kaggle.com/settings "
+            "и поместите в ~/.kaggle/kaggle.json",
             e,
         )
         raise
@@ -97,12 +92,22 @@ def main() -> Path:
     with contextlib.suppress(FileNotFoundError):
         ZIP_FILENAME.unlink()
 
-    # Удаление первого столбца (индекс)
-    remove_leading_index_column()
+    _remove_leading_index_column()
 
     resolved = CSV_PATH.resolve()
     log.info("Готово. Абсолютный путь к CSV: %s", str(resolved))
     return resolved
+
+
+def _remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
+    """Удаляет лишний первый столбец-индекс в CSV, если он присутствует."""
+    df = pd.read_csv(str(csv_path))
+    first_col = str(df.columns[0])
+
+    if first_col in ("", "Unnamed: 0", "_c0") or first_col.startswith("Unnamed"):
+        df = df.iloc[:, 1:]
+        df.to_csv(csv_path, index=False)
+        log.info("Удалён индекс-столбец '%s'", first_col)
 
 
 if __name__ == "__main__":

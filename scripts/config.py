@@ -5,11 +5,24 @@
 """
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from scripts.logging_config import get_logger
+from scripts.constants import (
+    BASELINE_NUMERIC_STATS_FILENAME,
+    BEST_MODEL_FILENAME,
+    BEST_MODEL_META_FILENAME,
+    DEFAULT_CSV_NAME,
+    DEFAULT_DRIFT_ARTEFACTS_SUBDIR,
+    DEFAULT_JSON_NAME,
+    DEFAULT_KAGGLE_DATASET,
+    DEFAULT_MODEL_ARTEFACTS_SUBDIR,
+    DEFAULT_MODEL_DIR,
+    DEFAULT_PROCESSED_DATA_DIR,
+    DEFAULT_RAW_DATA_DIR,
+)
 from scripts.models.kinds import ModelKind
 
 # Загружаем .env только если не в Airflow (Airflow использует env_file в docker-compose)
@@ -44,25 +57,27 @@ def _getenv_path(key: str, default: str) -> Path:
     return Path(os.environ.get(key, default))
 
 
-# Seed
 SEED = _getenv_int("SEED", 42)
 
 # Директории
-RAW_DATA_DIR = _getenv_path("RAW_DATA_DIR", "data/raw")
-PROCESSED_DATA_DIR = _getenv_path("PROCESSED_DATA_DIR", "data/processed")
-MODEL_DIR = _getenv_path("MODEL_DIR", "artefacts")
-MODEL_FILE_DIR = MODEL_DIR
+RAW_DATA_DIR = _getenv_path("RAW_DATA_DIR", DEFAULT_RAW_DATA_DIR)
+PROCESSED_DATA_DIR = _getenv_path("PROCESSED_DATA_DIR", DEFAULT_PROCESSED_DATA_DIR)
+MODEL_DIR = _getenv_path("MODEL_DIR", DEFAULT_MODEL_DIR)
 MODEL_ARTEFACTS_DIR = _getenv_path(
-    "MODEL_ARTEFACTS_DIR", str(MODEL_DIR / "model_artefacts")
+    "MODEL_ARTEFACTS_DIR", str(MODEL_DIR / DEFAULT_MODEL_ARTEFACTS_SUBDIR)
 )
 DRIFT_ARTEFACTS_DIR = _getenv_path(
-    "DRIFT_ARTEFACTS_DIR", str(MODEL_DIR / "drift_artefacts")
+    "DRIFT_ARTEFACTS_DIR", str(MODEL_DIR / DEFAULT_DRIFT_ARTEFACTS_SUBDIR)
 )
 
+BEST_MODEL_PATH = MODEL_DIR / BEST_MODEL_FILENAME
+BEST_MODEL_META_PATH = MODEL_ARTEFACTS_DIR / BEST_MODEL_META_FILENAME
+BASELINE_NUMERIC_STATS_PATH = MODEL_ARTEFACTS_DIR / BASELINE_NUMERIC_STATS_FILENAME
+
 # Датасет
-KAGGLE_DATASET = os.environ.get("KAGGLE_DATASET", "bharadwaj6/kindle-reviews")
-CSV_NAME = os.environ.get("CSV_NAME", "kindle_reviews.csv")
-JSON_NAME = os.environ.get("JSON_NAME", "kindle_reviews.json")
+KAGGLE_DATASET = os.environ.get("KAGGLE_DATASET", DEFAULT_KAGGLE_DATASET)
+CSV_NAME = os.environ.get("CSV_NAME", DEFAULT_CSV_NAME)
+JSON_NAME = os.environ.get("JSON_NAME", DEFAULT_JSON_NAME)
 
 # Флаги
 FORCE_DOWNLOAD = _getenv_bool("FORCE_DOWNLOAD", False)
@@ -75,31 +90,33 @@ INJECT_SYNTHETIC_DRIFT = _getenv_bool("INJECT_SYNTHETIC_DRIFT", False)
 RUN_DRIFT_MONITOR = _getenv_bool("RUN_DRIFT_MONITOR", False)
 RUN_DATA_VALIDATION = _getenv_bool("RUN_DATA_VALIDATION", True)
 
-# Обработка данных
+# Порог минимального размера выборок для стабильной оценки PSI метрики
+MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
+
+# Лимит сэмплирования на класс для балансировки датасета (компромисс между
+# скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
 PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 35000)
+
+# Размер словаря TF-IDF — кратный 1024 для выравнивания в памяти
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
 SHUFFLE_PARTITIONS = _getenv_int("SHUFFLE_PARTITIONS", 32)
 MIN_DF = _getenv_int("MIN_DF", 3)
 MIN_TF = _getenv_int("MIN_TF", 2)
 
-# Оптимизация памяти
-MEMORY_WARNING_MB = _getenv_int("MEMORY_WARNING_MB", 3072)
+# TF-IDF параметры
 TFIDF_MAX_FEATURES_MIN = _getenv_int("TFIDF_MAX_FEATURES_MIN", 2000)
 TFIDF_MAX_FEATURES_MAX = _getenv_int("TFIDF_MAX_FEATURES_MAX", 6000)
 TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
-FORCE_SVD_THRESHOLD_MB = _getenv_int("FORCE_SVD_THRESHOLD_MB", 4000)
-
-# Эвристики для оценки размера TF-IDF матрицы при force_svd расчётах
-SVD_ESTIMATION_AVG_TERMS = _getenv_int("SVD_ESTIMATION_AVG_TERMS", 120)
-SVD_ESTIMATION_BIGRAM_COEF = _getenv_float("SVD_ESTIMATION_BIGRAM_COEF", 1.5)
 
 # Обучение
-OPTUNA_N_TRIALS = _getenv_int("OPTUNA_N_TRIALS", 30)
+OPTUNA_N_TRIALS = _getenv_int(
+    "OPTUNA_N_TRIALS", 30
+)  # Компромисс между качеством оптимизации и временем
 OPTUNA_STORAGE = os.environ.get(
     "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
 )
 STUDY_BASE_NAME = os.environ.get("STUDY_BASE_NAME", "kindle_optuna")
-N_FOLDS = _getenv_int("N_FOLDS", 1)
+N_FOLDS = _getenv_int("N_FOLDS", 1)  # 1 = holdout validation, >1 = cross-validation
 TRAIN_DEVICE = os.environ.get("TRAIN_DEVICE", "cpu")
 EARLY_STOP_PATIENCE = _getenv_int("EARLY_STOP_PATIENCE", 8)
 OPTUNA_TIMEOUT_SEC = _getenv_int("OPTUNA_TIMEOUT_SEC", 2400)
@@ -110,15 +127,14 @@ OPTUNA_TOPK_EXPORT = _getenv_int("OPTUNA_TOPK_EXPORT", 20)
 # DistilBERT гиперпараметры
 DISTILBERT_MIN_EPOCHS = _getenv_int("DISTILBERT_MIN_EPOCHS", 2)
 DISTILBERT_MAX_EPOCHS = _getenv_int("DISTILBERT_MAX_EPOCHS", 8)
-DISTILBERT_EARLY_STOP_PATIENCE = _getenv_int("DISTILBERT_EARLY_STOP_PATIENCE", 3)
 
 # Модели для обучения
 SELECTED_MODEL_KINDS = [
-    # ModelKind.logreg,
+    ModelKind.logreg,
     ModelKind.rf,
-    # ModelKind.hist_gb,
-    # ModelKind.mlp,
-    # ModelKind.distilbert,
+    ModelKind.hist_gb,
+    ModelKind.mlp,
+    ModelKind.distilbert,
 ]
 
 # MLflow
@@ -142,26 +158,12 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
 LOG_INCLUDE_TIMESTAMP = _getenv_bool("LOG_INCLUDE_TIMESTAMP", True)
 
-# Логгер для совместимости
-log = get_logger("kindle")
+
+@dataclass(frozen=True)
+class DataPaths:
+    train: Path = PROCESSED_DATA_DIR / "train.parquet"
+    val: Path = PROCESSED_DATA_DIR / "val.parquet"
+    test: Path = PROCESSED_DATA_DIR / "test.parquet"
 
 
-def get_tfidf_max_features_range(n_samples: int) -> tuple[int, int, int]:
-    """Рассчитывает диапазон max_features для TF-IDF на основе размера выборки.
-
-    Args:
-        n_samples: Количество образцов в датасете.
-
-    Returns:
-        Кортеж (min_features, max_features, step) для динамической оптимизации.
-    """
-    min_val = TFIDF_MAX_FEATURES_MIN
-    max_val = TFIDF_MAX_FEATURES_MAX
-    step = TFIDF_MAX_FEATURES_STEP
-
-    # Масштабируем диапазон в зависимости от размера датасета
-    scaling_factor = max(0.5, min(1.0, n_samples / 100000))
-    adjusted_min = max(500, int(min_val * scaling_factor))
-    adjusted_max = int(max_val * scaling_factor)
-
-    return adjusted_min, adjusted_max, step
+DATA_PATHS = DataPaths()

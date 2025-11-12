@@ -1,16 +1,26 @@
 """Общая логика работы с моделями и MLflow Registry."""
 
 import json
+import os
 from pathlib import Path
 
-from scripts.config import (
-    MODEL_ARTEFACTS_DIR,
-    MODEL_PRODUCTION_THRESHOLD,
-)
+from scripts.config import MODEL_PRODUCTION_THRESHOLD
+from scripts.constants import DEFAULT_MODEL_ARTEFACTS_SUBDIR, DEFAULT_MODEL_DIR
 from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
 
 log = get_logger(__name__)
+
+# Ленивое вычисление пути к артефактам
+MODEL_ARTEFACTS_DIR = Path(
+    os.getenv(
+        "MODEL_ARTEFACTS_DIR",
+        str(
+            Path(os.getenv("MODEL_DIR", DEFAULT_MODEL_DIR))
+            / DEFAULT_MODEL_ARTEFACTS_SUBDIR
+        ),
+    )
+)
 
 
 def load_old_model_metric() -> float | None:
@@ -23,14 +33,15 @@ def load_old_model_metric() -> float | None:
     try:
         with open(best_meta_path, encoding="utf-8") as f:
             old_meta = json.load(f)
-            old_model_metric = old_meta.get("best_val_f1_macro")
-            if old_model_metric:
-                log.info(
-                    "Найдена предыдущая модель с val_f1_macro=%.4f",
-                    old_model_metric,
-                )
-            return old_model_metric
-    except Exception as e:
+        old_model_metric = old_meta.get("best_val_f1_macro")
+        if isinstance(old_model_metric, (int, float)):
+            log.info(
+                "Найдена предыдущая модель с val_f1_macro=%.4f",
+                old_model_metric,
+            )
+            return float(old_model_metric)
+        return None
+    except (OSError, ValueError, KeyError, TypeError) as e:
         log.warning("Не удалось загрузить метаданные старой модели: %s", e)
         return None
 
@@ -114,7 +125,7 @@ def register_model_in_mlflow(
                 name=model_name,
                 version=latest_version,
                 stage="Production",
-                archive_existing_versions=True,
+                archive_existing_versions=False,
             )
             log.info(
                 "Модель %s версия %s переведена в Production (F1=%.4f >= %.2f)",
@@ -123,6 +134,38 @@ def register_model_in_mlflow(
                 test_f1_macro,
                 MODEL_PRODUCTION_THRESHOLD,
             )
+            # Оставляем последние N продакшен‑версий, остальные архивируем
+            import os
+
+            try:
+                keep_n = int(os.environ.get("MLFLOW_KEEP_LATEST", "3"))
+            except (ValueError, TypeError):
+                keep_n = 3
+            try:
+                versions = client.search_model_versions(f"name='{model_name}'")
+                prod_versions = [
+                    v
+                    for v in versions
+                    if getattr(v, "current_stage", "") == "Production"
+                ]
+                # Сортируем по номеру версиии
+                prod_versions.sort(
+                    key=lambda v: int(getattr(v, "version", "0")), reverse=True
+                )
+                for v in prod_versions[keep_n:]:
+                    client.transition_model_version_stage(
+                        name=model_name,
+                        version=v.version,
+                        stage="Archived",
+                        archive_existing_versions=False,
+                    )
+                if len(prod_versions) > keep_n:
+                    log.info(
+                        "Заархивированы старые Production-версии, оставлено %d последних",
+                        keep_n,
+                    )
+            except (OSError, ValueError, RuntimeError) as e:
+                log.warning("Не удалось выполнить ротацию Production-версий: %s", e)
         else:
             log.warning(
                 "Модель %s версия %s остаётся в Staging (F1=%.4f < %.2f)",
@@ -131,7 +174,7 @@ def register_model_in_mlflow(
                 test_f1_macro,
                 MODEL_PRODUCTION_THRESHOLD,
             )
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
 
 

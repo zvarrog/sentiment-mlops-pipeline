@@ -1,4 +1,4 @@
-"""Централизованная конфигурация логирования для всех компонентов проекта."""
+"""Централизованная конфигурация логирования."""
 
 import contextvars
 import json
@@ -7,23 +7,18 @@ import logging.config
 from contextlib import contextmanager
 from pathlib import Path
 
-# Контекстный trace_id для корреляции событий
 _trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "trace_id", default=None
 )
 
 
 class TraceIdFilter(logging.Filter):
-    """Фильтр, добавляющий trace_id в запись лога."""
-
     def filter(self, record: logging.LogRecord) -> bool:
         record.trace_id = _trace_id_var.get() or "-"
         return True
 
 
 class JsonFormatter(logging.Formatter):
-    """JSON-форматтер без внешних зависимостей."""
-
     def format(self, record: logging.LogRecord) -> str:
         payload = {
             "ts": self.formatTime(record, self.datefmt),
@@ -41,7 +36,6 @@ class JsonFormatter(logging.Formatter):
 
 @contextmanager
 def trace_context(trace_id: str):
-    """Контекст-менеджер для установки trace_id на время блока."""
     token = _trace_id_var.set(trace_id)
     try:
         yield
@@ -50,17 +44,14 @@ def trace_context(trace_id: str):
 
 
 def set_trace_id(trace_id: str) -> None:
-    """Установить trace_id в текущем контексте."""
     _trace_id_var.set(trace_id)
 
 
 def get_trace_id() -> str | None:
-    """Получить текущий trace_id."""
     return _trace_id_var.get()
 
 
 def clear_trace_id() -> None:
-    """Очистить trace_id в текущем контексте."""
     _trace_id_var.set(None)
 
 
@@ -69,7 +60,6 @@ def get_logging_config(
     log_file: str | None = None,
     log_format: str = "text",
 ) -> dict:
-    """Создает конфигурацию логирования."""
     base_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     formatter_name = "default" if log_format != "json" else "json"
 
@@ -101,22 +91,18 @@ def get_logging_config(
         },
         "root": {"level": level, "handlers": ["console"]},
         "loggers": {
-            # Наши компоненты
             "kindle": {"level": level, "handlers": ["console"], "propagate": False},
             "scripts": {"level": level, "handlers": ["console"], "propagate": False},
-            # Подавляем избыточные логи внешних библиотек
             "urllib3": {"level": "WARNING"},
             "pyspark": {"level": "WARNING"},
             "py4j": {"level": "WARNING"},
-            "mlflow": {"level": "ERROR"},  # Убираем INFO/WARNING от MLflow
-            "optuna": {"level": "ERROR"},  # Убираем INFO/WARNING от Optuna
-            "git": {"level": "ERROR"},  # Убираем предупреждения git
+            "mlflow": {"level": "ERROR"},
+            "optuna": {"level": "ERROR"},
+            "git": {"level": "ERROR"},
         },
     }
 
-    # Добавляем файловый хендлер если нужен
     if log_file:
-        # Создаем директорию для логов если нужно
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -125,13 +111,12 @@ def get_logging_config(
             "level": level,
             "formatter": formatter_name if log_format == "json" else "detailed",
             "filename": str(log_path),
-            "maxBytes": 10 * 1024 * 1024,  # 10MB
+            "maxBytes": 10 * 1024 * 1024,
             "backupCount": 5,
             "encoding": "utf-8",
             "filters": ["trace"],
         }
 
-        # Добавляем файловый хендлер к root и основным логгерам
         config["root"]["handlers"].append("file")
         config["loggers"]["kindle"]["handlers"].append("file")
         config["loggers"]["scripts"]["handlers"].append("file")
@@ -144,7 +129,6 @@ def setup_logging(
     log_file: str | None = None,
     log_format: str = "text",
 ) -> logging.Logger:
-    """Настраивает логирование для проекта."""
     config = get_logging_config(level=level, log_file=log_file, log_format=log_format)
 
     root_logger = logging.getLogger()
@@ -158,7 +142,6 @@ def setup_logging(
 
 
 def get_logger(name: str = "kindle") -> logging.Logger:
-    """Получить логгер с автоматической настройкой."""
     root_logger = logging.getLogger()
     if not root_logger.handlers:
         setup_logging()
@@ -170,7 +153,6 @@ def setup_auto_logging(
     log_file: str | None = None,
     log_format: str = "text",
 ) -> logging.Logger:
-    """Настроить логирование и вернуть логгер для API/сервисов."""
     return setup_logging(level=level, log_file=log_file, log_format=log_format)
 
 
@@ -178,8 +160,4 @@ def setup_training_logging(
     level: str = "INFO",
     log_file: str | None = None,
 ) -> logging.Logger:
-    """Настроить логирование для обучения моделей (train.py).
-
-    Используется для инициализации логирования перед запуском training.
-    """
-    return setup_logging(level=level, log_file=log_file, log_format="text")
+    return setup_logging(level=level, log_file=log_file)

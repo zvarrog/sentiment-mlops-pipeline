@@ -18,19 +18,14 @@ from pyspark.sql.functions import (
     col,
     count,
     greatest,
-    length,
     lit,
-    lower,
     rand,
-    regexp_replace,
-    size,
-    split,
-    substring,
     when,
 )
 
 from scripts.config import (
     CSV_NAME,
+    DATA_PATHS,
     HASHING_TF_FEATURES,
     MIN_DF,
     MIN_TF,
@@ -45,10 +40,6 @@ from scripts.config import (
 
 from .logging_config import setup_auto_logging
 from .text_features import calculate_sentiment
-
-TRAIN_PATH = PROCESSED_DATA_DIR / "train.parquet"
-VAL_PATH = PROCESSED_DATA_DIR / "val.parquet"
-TEST_PATH = PROCESSED_DATA_DIR / "test.parquet"
 
 log = setup_auto_logging()
 
@@ -74,9 +65,9 @@ def process_data() -> None:
 
     if (
         not force_process
-        and TRAIN_PATH.exists()
-        and VAL_PATH.exists()
-        and TEST_PATH.exists()
+        and DATA_PATHS.train.exists()
+        and DATA_PATHS.val.exists()
+        and DATA_PATHS.test.exists()
     ):
         log.warning(
             "Обработанные данные уже существуют в %s. Для форсированной обработки установите флаг FORCE_PROCESS = True.",
@@ -115,26 +106,30 @@ def process_data() -> None:
         multiLine=True,
     )
 
-    max_text_chars = 5000
-    # Фичи пунктуации
-    df = df.withColumn("text_len", length(col("reviewText")))
-    df = df.withColumn("word_count", size(split(col("reviewText"), " ")))
-    df = df.withColumn(
-        "kindle_freq", (size(split(lower(col("reviewText")), "kindle")) - 1)
+    # Единая очистка текста и извлечение базовых признаков
+    from scripts.text_features import (
+        get_spark_clean_udf,
+        get_spark_feature_extraction_udf,
     )
-    df = df.withColumn("exclamation_count", (size(split(col("reviewText"), "!")) - 1))
-    df = df.withColumn(
+
+    clean_udf = get_spark_clean_udf()
+    feature_udf = get_spark_feature_extraction_udf()
+
+    # Нормализуем текст
+    df = df.withColumn("reviewText", clean_udf(col("reviewText")))
+
+    # Извлекаем признаки в MapType и разворачиваем в колонки
+    df = df.withColumn("features", feature_udf(col("reviewText")))
+    for feature_name in [
+        "text_len",
+        "word_count",
+        "kindle_freq",
+        "exclamation_count",
         "caps_ratio",
-        length(regexp_replace(col("reviewText"), "[^A-Z]", ""))
-        / greatest(length(col("reviewText")), lit(1)),
-    )
-    df = df.withColumn("question_count", (size(split(col("reviewText"), "\\?")) - 1))
-    # Чистка текста
-    text_col = lower(substring(col("reviewText"), 1, max_text_chars))
-    text_col = regexp_replace(text_col, r"http\S+", " ")
-    text_col = regexp_replace(text_col, r"[^a-z ]+", " ")
-    text_col = regexp_replace(text_col, r"\s+", " ")
-    df = df.withColumn("reviewText", text_col)
+        "question_count",
+    ]:
+        df = df.withColumn(feature_name, col("features").getItem(feature_name))
+    df = df.drop("features")
 
     # Чистим данные: валидные тексты и оценки
     clean = df.filter((col("reviewText").isNotNull()) & (col("overall").isNotNull()))
@@ -157,19 +152,20 @@ def process_data() -> None:
         "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, clean.count()
     )
 
-    from pyspark.sql.functions import udf
+    # sentiment через Pandas UDF
+    import pandas as pd
+    from pyspark.sql.functions import pandas_udf
     from pyspark.sql.types import FloatType
 
-    @udf(FloatType())
-    def calculate_sentiment_textblob(text: str) -> float:
-        """UDF обёртка для общей функции sentiment из text_features."""
-        return calculate_sentiment(text)
+    @pandas_udf(FloatType())
+    def sentiment_udf(texts: pd.Series) -> pd.Series:
+        return texts.fillna("").apply(calculate_sentiment)
 
     clean = (
         clean.withColumn(
             "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
         )
-        .withColumn("sentiment", calculate_sentiment_textblob(col("reviewText")))
+        .withColumn("sentiment", sentiment_udf(col("reviewText")))
         .withColumn(
             "sentiment_category",
             when(col("sentiment") > 0.1, "positive")
@@ -237,7 +233,8 @@ def process_data() -> None:
     )
 
     try:
-        # Агрегации на train
+        # Агрегации на train — для избежания data leakage
+        # Статистики для val и test будут заполнены только для известных ID
         user_stats = (
             train.groupBy("reviewerID")
             .agg(
@@ -256,7 +253,6 @@ def process_data() -> None:
             .persist(StorageLevel.MEMORY_AND_DISK)
         )
 
-        # Батчируем join для всех выборок
         train = train.join(user_stats, on="reviewerID", how="left").join(
             item_stats, on="asin", how="left"
         )
@@ -271,19 +267,18 @@ def process_data() -> None:
             "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
         )
 
-        train.write.mode("overwrite").parquet(str(TRAIN_PATH))
-        val.write.mode("overwrite").parquet(str(VAL_PATH))
-        test.write.mode("overwrite").parquet(str(TEST_PATH))
+        train.write.mode("overwrite").parquet(str(DATA_PATHS.train))
+        val.write.mode("overwrite").parquet(str(DATA_PATHS.val))
+        test.write.mode("overwrite").parquet(str(DATA_PATHS.test))
     finally:
         train.unpersist()
         val.unpersist()
         test.unpersist()
         # Очищаем кэши агрегатов (если переменные определены)
-        try:
+        if "user_stats" in locals() and hasattr(user_stats, "unpersist"):
             user_stats.unpersist()
+        if "item_stats" in locals() and hasattr(item_stats, "unpersist"):
             item_stats.unpersist()
-        except Exception:
-            pass
 
     log.info(
         "Данные сохранены в %s",
@@ -293,9 +288,7 @@ def process_data() -> None:
     from scripts.config import RUN_DATA_VALIDATION
 
     if RUN_DATA_VALIDATION:
-        log.info("Проверка: запуск валидации сохранённых parquet файлов...")
         try:
-            # Используем pandas для валидации после записи Spark
             from .data_validation import (
                 log_validation_results,
                 validate_parquet_dataset,
@@ -304,15 +297,12 @@ def process_data() -> None:
             validation_results = validate_parquet_dataset(Path(PROCESSED_DATA_DIR))
             all_valid = log_validation_results(validation_results)
 
-            if all_valid:
-                log.info("Валидация сохранённых данных успешно завершена")
-            else:
+            if not all_valid:
                 log.warning("Обнаружены проблемы в сохранённых данных")
 
-        except Exception as e:
+        except (OSError, ValueError, ImportError) as e:
             log.warning("Ошибка валидации сохранённых данных: %s", e)
 
-    log.info("Обработка завершена.")
     spark.stop()
 
 

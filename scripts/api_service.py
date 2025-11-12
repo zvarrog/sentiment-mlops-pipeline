@@ -3,7 +3,7 @@ import json
 import signal
 import time
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, TypedDict
 
 import joblib
 import pandas as pd
@@ -18,33 +18,49 @@ from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from textblob import TextBlob
 
-from .config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
+from .config import (
+    BASELINE_NUMERIC_STATS_PATH,
+    BEST_MODEL_META_PATH,
+    BEST_MODEL_PATH,
+    MODEL_ARTEFACTS_DIR,
+)
 from .feature_contract import FeatureContract
-
-# Настраиваем логирование для API
 from .logging_config import (
     clear_trace_id,
-    get_trace_id,
+    get_logger,
     set_trace_id,
-    setup_auto_logging,
 )
 
-log = setup_auto_logging()
+log = get_logger("api_service")
 
-# Пути к артефактам модели
-BEST_MODEL_PATH = MODEL_FILE_DIR / "best_model.joblib"
-META_PATH = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
-BASELINE_NUMERIC_PATH = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
+MAX_TEXT_LENGTH = 10_000
+MAX_BATCH_SIZE = 100
 
 
-shutdown_event = asyncio.Event()
+class NumericFeatures(TypedDict, total=False):
+    """Числовые признаки для модели."""
+
+    text_len: float
+    word_count: float
+    kindle_freq: float
+    sentiment: float
+    user_avg_len: float
+    user_review_count: float
+    item_avg_len: float
+    item_review_count: float
+    exclamation_count: float
+    caps_ratio: float
+    question_count: float
+    avg_word_length: float
+
+
+_artifacts_loaded = False
 
 
 def signal_handler(signum, frame):
-    """Обработчик системных сигналов для корректного завершения приложения."""
-    log.info("Получен сигнал %s, инициирую shutdown", signum)
-    shutdown_event.set()
+    log.info("Получен сигнал %s, завершаем обработку", signum)
 
 
 signal.signal(signal.SIGTERM, signal_handler)
@@ -70,6 +86,19 @@ PREDICTION_COUNT = Counter(
     ["model_name"],
 )
 
+# Бизнес-метрики: распределение уверенности и классов
+PREDICTION_CONFIDENCE = Histogram(
+    "prediction_confidence",
+    "Max predicted probability per request item",
+    buckets=(0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 1.0),
+)
+
+PREDICTION_LABELS = Counter(
+    "prediction_labels_total",
+    "Distribution of predicted labels",
+    ["label"],
+)
+
 ERROR_COUNT = Counter(
     "api_errors_total",
     "Total API errors",
@@ -81,7 +110,6 @@ class PredictRequest(BaseModel):
     """Запрос: список текстов и опциональные числовые признаки."""
 
     texts: list[str]
-    # Опциональные числовые признаки для более точного предсказания
     numeric_features: dict[str, list[float]] | None = None
 
 
@@ -94,11 +122,9 @@ class PredictResponse(BaseModel):
 
 
 class BatchPredictRequest(BaseModel):
-    """Пакетный запрос: список объектов с полем reviewText и числовыми признаками."""
+    """Пакетный запрос."""
 
-    data: list[
-        dict[str, Any]
-    ]  # Список объектов с полями reviewText и числовыми признаками
+    data: list[dict[str, Any]]
 
 
 class BatchPredictResponse(BaseModel):
@@ -126,9 +152,11 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Старт
-        if not defer_artifacts:
+        global _artifacts_loaded
+
+        if not defer_artifacts and not _artifacts_loaded:
             _load_artifacts(app)
+            _artifacts_loaded = True
 
         # Инициализация метрик ошибок для корректной работы дашборда
         for endpoint in ["/predict", "/batch_predict"]:
@@ -137,19 +165,13 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
                     method="POST", endpoint=endpoint, error_type=error_type
                 ).inc(0)
 
-        log.info("API запущен и готов принимать запросы")
-
         yield
 
-        # Завершение
-        log.info("Завершаю обработку текущих запросов...")
         await asyncio.sleep(0.1)
 
         for attr in ("MODEL", "META", "NUMERIC_DEFAULTS", "FEATURE_CONTRACT"):
             if hasattr(app.state, attr):
                 delattr(app.state, attr)
-
-        log.info("API корректно остановлен")
 
     application = FastAPI(
         title="Kindle Reviews API", version="1.0.0", lifespan=lifespan
@@ -172,7 +194,6 @@ def _register_middlewares(application: FastAPI) -> None:
 
     @application.middleware("http")
     async def metrics_middleware(request: Request, call_next):
-        """Сбор метрик Prometheus по каждому запросу."""
         start = time.perf_counter()
 
         response = await call_next(request)
@@ -193,31 +214,12 @@ def _register_middlewares(application: FastAPI) -> None:
 
     @application.middleware("http")
     async def request_id_middleware(request: Request, call_next):
-        """Устанавливает X-Request-ID и trace_id для запроса."""
         req_id = request.headers.get("X-Request-ID") or f"req-{id(request)}"
         set_trace_id(req_id)
 
-        # Исключаем служебные эндпоинты из логирования
-        skip_logging = request.url.path in {"/metrics", "/health"}
-
-        if not skip_logging:
-            log.info(
-                "Запрос: %s %s, X-Request-ID=%s",
-                request.method,
-                request.url.path,
-                req_id,
-            )
         try:
             response = await call_next(request)
         finally:
-            if not skip_logging:
-                log.info(
-                    "Ответ: %s %s -> %s, X-Request-ID=%s",
-                    request.method,
-                    request.url.path,
-                    getattr(request.state, "status_code", "?"),
-                    get_trace_id(),
-                )
             clear_trace_id()
         response.headers["X-Request-ID"] = req_id
         return response
@@ -227,21 +229,26 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
     """Регистрирует маршруты API."""
 
     @application.get("/health")
-    def health(response: Response):
-        """Проверка состояния API и загруженной модели."""
+    def health():
+        """Liveness probe: API процесс жив."""
+        return {"status": "alive"}
+
+    @application.get("/ready")
+    def ready(response: Response):
+        """Readiness probe: API готов обрабатывать запросы."""
         model_loaded = getattr(application.state, "MODEL", None) is not None
 
         if not model_loaded:
             response.status_code = 503
             return {
-                "status": "waiting_for_model",
+                "status": "not_ready",
                 "model_exists": BEST_MODEL_PATH.exists(),
-                "message": "API запущен, ожидается обучение модели",
+                "message": "Модель не загружена, ожидается обучение",
             }
 
         return {
-            "status": "ok",
-            "model_exists": BEST_MODEL_PATH.exists(),
+            "status": "ready",
+            "model_loaded": True,
             "best_model": getattr(application.state, "META", {}).get("best_model"),
         }
 
@@ -281,57 +288,22 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
     @application.post("/predict", response_model=PredictResponse)
     @limiter.limit("100/minute")
     def predict(request: Request, req: PredictRequest):
-        """Предсказание для списка текстов с опциональными числовыми признаками."""
         try:
-            model = getattr(application.state, "MODEL", None)
-            if model is None:
-                ERROR_COUNT.labels(
-                    method="POST", endpoint="/predict", error_type="model_not_loaded"
-                ).inc()
-                raise HTTPException(status_code=500, detail="Модель не загружена")
-            if not req.texts:
-                ERROR_COUNT.labels(
-                    method="POST", endpoint="/predict", error_type="empty_input"
-                ).inc()
-                raise HTTPException(status_code=400, detail="Список texts пуст")
+            labels, probs, warnings = _validate_and_predict(
+                application, "/predict", req.texts, req.numeric_features
+            )
 
-            meta = getattr(application.state, "META", {})
-            model_name = meta.get("best_model", "unknown")
-            PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.texts))
-
-            name = model.__class__.__name__.lower()
-            if "distil" in name:
-                preds = model.predict(pd.Series(req.texts))
-                probs = None
-                if hasattr(model, "predict_proba"):
-                    try:
-                        probs = model.predict_proba(pd.Series(req.texts)).tolist()
-                    except (AttributeError, ValueError, TypeError):
-                        probs = None
-                return PredictResponse(
-                    labels=[int(x) for x in preds],
-                    probs=probs,
-                    warnings=None,
-                )
-
-            df, ignored = _build_dataframe(application, req.texts, req.numeric_features)
-            preds = model.predict(df)
-            probs = None
-            if hasattr(model, "predict_proba"):
-                try:
-                    probs = model.predict_proba(df).tolist()
-                except (AttributeError, ValueError, TypeError):
-                    probs = None
-
-            warnings = {"ignored_features": ignored} if ignored else None
             return PredictResponse(
-                labels=[int(x) for x in preds],
-                probs=probs,
-                warnings=warnings,
+                labels=[int(x) for x in labels], probs=probs, warnings=warnings
             )
         except HTTPException:
             raise
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/predict", error_type="bad_request"
+            ).inc()
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except (RuntimeError, FileNotFoundError, OSError) as e:
             ERROR_COUNT.labels(
                 method="POST", endpoint="/predict", error_type="internal_error"
             ).inc()
@@ -340,109 +312,56 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
     @application.post("/batch_predict", response_model=BatchPredictResponse)
     @limiter.limit("50/minute")
     def batch_predict(request: Request, req: BatchPredictRequest):
-        """Пакетное предсказание для списка объектов с полными данными."""
         try:
-            model = getattr(application.state, "MODEL", None)
-            if model is None:
-                ERROR_COUNT.labels(
-                    method="POST",
-                    endpoint="/batch_predict",
-                    error_type="model_not_loaded",
-                ).inc()
-                raise HTTPException(status_code=500, detail="Модель не загружена")
-            if not req.data:
-                ERROR_COUNT.labels(
-                    method="POST", endpoint="/batch_predict", error_type="empty_input"
-                ).inc()
-                raise HTTPException(status_code=400, detail="Список data пуст")
-
-            meta = getattr(application.state, "META", {})
-            model_name = meta.get("best_model", "unknown")
-            PREDICTION_COUNT.labels(model_name=model_name).inc(len(req.data))
-
-            texts = []
-            numeric_features = {}
-            all_ignored = {}
-
+            # Формируем список текстов и числовых признаков из batch данных
+            rows: list[dict[str, Any]] = []
             for item in req.data:
-                texts.append(item.get("reviewText", ""))
+                row: dict[str, Any] = {"reviewText": str(item.get("reviewText", ""))}
                 for key, value in item.items():
                     if key != "reviewText" and isinstance(value, (int, float)):
-                        numeric_features.setdefault(key, []).append(float(value))
+                        row[key] = float(value)
+                rows.append(row)
 
-            for _key, values in numeric_features.items():
-                while len(values) < len(texts):
-                    values.append(0.0)
+            import pandas as _pd
 
-            name = model.__class__.__name__.lower()
-            if "distil" in name:
-                preds = model.predict(pd.Series(texts))
-                probs = None
-                if hasattr(model, "predict_proba"):
-                    try:
-                        probs_array = model.predict_proba(pd.Series(texts))
-                        probs = [
-                            probs_array[i].tolist() for i in range(len(probs_array))
-                        ]
-                    except (AttributeError, ValueError, TypeError):
-                        probs = None
-            else:
-                df, ignored = _build_dataframe(application, texts, numeric_features)
-                if ignored:
-                    all_ignored["global"] = ignored
-                preds = model.predict(df)
-                probs = None
-                if hasattr(model, "predict_proba"):
-                    try:
-                        probs_array = model.predict_proba(df)
-                        probs = [
-                            probs_array[i].tolist() for i in range(len(probs_array))
-                        ]
-                    except (AttributeError, ValueError, TypeError):
-                        probs = None
+            df_in = _pd.DataFrame(rows)
+            texts = df_in["reviewText"].tolist()
 
-            predictions = []
-            for i in range(len(texts)):
-                pred_item = {
-                    "index": i,
-                    "prediction": int(preds[i]),
-                }
-                if probs:
-                    pred_item["probabilities"] = probs[i]
-                predictions.append(pred_item)
+            numeric_features: dict[str, list[float]] | None = None
+            num_cols = [c for c in df_in.columns if c != "reviewText"]
+            if num_cols:
+                numeric_features = {c: df_in[c].tolist() for c in num_cols}
 
-            return BatchPredictResponse(
-                predictions=predictions, warnings=all_ignored if all_ignored else None
+            labels, probs, ignored = _validate_and_predict(
+                application, "/batch_predict", texts, numeric_features
             )
+
+            all_ignored: dict[str, dict[str, list[str]]] | None = None
+            if ignored:
+                all_ignored = {"global": {"ignored_features": ignored}}
+
+            predictions = [
+                {
+                    "index": i,
+                    "prediction": int(labels[i]),
+                    **({"probabilities": probs[i]} if probs else {}),
+                }
+                for i in range(len(texts))
+            ]
+
+            return BatchPredictResponse(predictions=predictions, warnings=all_ignored)
         except HTTPException:
             raise
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/batch_predict", error_type="bad_request"
+            ).inc()
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except (RuntimeError, FileNotFoundError, OSError) as e:
             ERROR_COUNT.labels(
                 method="POST", endpoint="/batch_predict", error_type="internal_error"
             ).inc()
             raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @application.get("/health")
-    def health_check():
-        """Health check эндпоинт для мониторинга."""
-        model_loaded = (
-            hasattr(application.state, "MODEL") and application.state.MODEL is not None
-        )
-        artifacts_loaded = (
-            hasattr(application.state, "META")
-            and hasattr(application.state, "FEATURE_CONTRACT")
-            and application.state.META is not None
-        )
-
-        status = "healthy" if (model_loaded and artifacts_loaded) else "unhealthy"
-        return {
-            "status": status,
-            "model_loaded": model_loaded,
-            "artifacts_loaded": artifacts_loaded,
-            "model_type": application.state.META.get("best_model", "unknown")
-            if artifacts_loaded
-            else None,
-        }
 
     @application.get("/")
     def root():
@@ -458,6 +377,76 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
             },
             "docs": "/docs",
         }
+
+
+def _validate_and_predict(
+    application: FastAPI,
+    endpoint: str,
+    texts: list[str],
+    numeric_features: dict[str, list[float]] | None = None,
+) -> tuple[list[int], list[list[float]] | None, dict[str, list[str]] | None]:
+    """Общая логика валидации и предсказания для всех эндпоинтов.
+
+    Args:
+        application: FastAPI приложение
+        endpoint: Имя эндпоинта для логирования метрик
+        texts: Список текстов для предсказания
+        numeric_features: Опциональные числовые признаки
+
+    Returns:
+        Кортеж (предсказания, вероятности, предупреждения)
+
+    Raises:
+        HTTPException: При ошибках валидации или работы модели
+    """
+    model = getattr(application.state, "MODEL", None)
+    if model is None:
+        ERROR_COUNT.labels(
+            method="POST", endpoint=endpoint, error_type="model_not_loaded"
+        ).inc()
+        raise HTTPException(status_code=500, detail="Модель не загружена")
+
+    if not texts:
+        ERROR_COUNT.labels(
+            method="POST", endpoint=endpoint, error_type="empty_input"
+        ).inc()
+        raise HTTPException(status_code=400, detail="Список texts пуст")
+
+    if len(texts) > MAX_BATCH_SIZE:
+        ERROR_COUNT.labels(
+            method="POST", endpoint=endpoint, error_type="validation_error"
+        ).inc()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Размер батча {len(texts)} превышает максимум {MAX_BATCH_SIZE}",
+        )
+
+    for i, text in enumerate(texts):
+        if len(text) > MAX_TEXT_LENGTH:
+            ERROR_COUNT.labels(
+                method="POST", endpoint=endpoint, error_type="validation_error"
+            ).inc()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Текст #{i} длиной {len(text)} превышает лимит {MAX_TEXT_LENGTH}",
+            )
+
+    meta = getattr(application.state, "META", {})
+    model_name = meta.get("best_model", "unknown")
+    PREDICTION_COUNT.labels(model_name=model_name).inc(len(texts))
+
+    labels, probs, warnings = _predict_with_model(
+        application, model, texts, numeric_features
+    )
+
+    # Бизнес-метрики
+    if probs is not None:
+        for p in probs:
+            PREDICTION_CONFIDENCE.observe(max(p))
+    for lbl in labels:
+        PREDICTION_LABELS.labels(label=str(int(lbl))).inc()
+
+    return labels, probs, warnings
 
 
 def _load_artifacts(application: FastAPI) -> None:
@@ -477,22 +466,24 @@ def _load_artifacts(application: FastAPI) -> None:
     log.info("Модель загружена: %s", BEST_MODEL_PATH)
 
     # Метаданные модели (обязательно)
-    if not META_PATH.exists():
-        log.warning("Метаданные модели не найдены: %s", META_PATH)
+    if not BEST_MODEL_META_PATH.exists():
+        log.warning("Метаданные модели не найдены: %s", BEST_MODEL_META_PATH)
         application.state.META = {}
     else:
-        application.state.META = json.loads(META_PATH.read_text(encoding="utf-8"))
+        application.state.META = json.loads(
+            BEST_MODEL_META_PATH.read_text(encoding="utf-8")
+        )
 
     # Baseline статистики (опционально, используются для мониторинга дрифта)
-    if BASELINE_NUMERIC_PATH.exists():
+    if BASELINE_NUMERIC_STATS_PATH.exists():
         application.state.NUMERIC_DEFAULTS = json.loads(
-            BASELINE_NUMERIC_PATH.read_text(encoding="utf-8")
+            BASELINE_NUMERIC_STATS_PATH.read_text(encoding="utf-8")
         )
         log.info("Baseline статистики загружены")
     else:
         log.warning(
             "Baseline статистики не найдены: %s (дрифт-мониторинг недоступен)",
-            BASELINE_NUMERIC_PATH,
+            BASELINE_NUMERIC_STATS_PATH,
         )
         application.state.NUMERIC_DEFAULTS = {}
 
@@ -501,7 +492,7 @@ def _load_artifacts(application: FastAPI) -> None:
         application.state.FEATURE_CONTRACT = FeatureContract.from_model_artifacts(
             MODEL_ARTEFACTS_DIR
         )
-    except Exception as e:
+    except (FileNotFoundError, OSError, ValueError, RuntimeError) as e:
         log.warning("Не удалось загрузить контракт признаков: %s", e)
         application.state.FEATURE_CONTRACT = None
 
@@ -538,22 +529,18 @@ def _build_dataframe(
             else:
                 df[col] = values
 
-    from textblob import TextBlob
+    def _sentiment_textblob(s: pd.Series) -> pd.Series:
+        def calculate_sentiment(text):
+            if not text or len(str(text).strip()) < 3:
+                return 0.0
+
+            blob = TextBlob(str(text))
+            polarity = blob.sentiment.polarity
+            return float(max(-1.0, min(1.0, round(polarity, 4))))
+
+        return s.apply(calculate_sentiment).astype(float)
 
     def _text_feature_extractors():
-        """Набор извлечения простых текстовых признаков (len, counts, sentiment)."""
-
-        def _sentiment_textblob(s: pd.Series) -> pd.Series:
-            def calculate_sentiment(text):
-                if not text or len(str(text).strip()) < 3:
-                    return 0.0
-
-                blob = TextBlob(str(text))
-                polarity = blob.sentiment.polarity
-                return float(max(-1.0, min(1.0, round(polarity, 4))))
-
-            return s.apply(calculate_sentiment).astype(float)
-
         return {
             "text_len": lambda s: s.str.len().astype(float),
             "word_count": lambda s: s.str.split().str.len().fillna(0).astype(float),
@@ -571,32 +558,71 @@ def _build_dataframe(
             "sentiment": _sentiment_textblob,
         }
 
-    # Фичи пунктуации
     s_raw = df["reviewText"].fillna("")
     for col, extractor in _text_feature_extractors().items():
         if col in numeric_cols and col not in df.columns and col != "sentiment":
             df[col] = extractor(s_raw)
 
-    # Чистка текста
-    s = s_raw.str.lower().str.slice(0, 5000)
-    s = s.str.replace(r"http\S+", " ", regex=True)
-    s = s.str.replace(r"[^a-z ]+", " ", regex=True)
-    s = s.str.replace(r"\s+", " ", regex=True)
-    df["reviewText"] = s
+    # Очистка текста
+    from scripts.text_features import clean_text
+
+    df["reviewText"] = s_raw.apply(clean_text)
 
     if "sentiment" in numeric_cols and "sentiment" not in df.columns:
         df["sentiment"] = _text_feature_extractors()["sentiment"](
             df["reviewText"].fillna("")
         )
 
-    # Остальные требуемые числовые колонки заполним базовыми значениями или нулями
+    # Недостающие числовые колонки — заполняем из baseline статистик
     baseline_stats = getattr(application.state, "NUMERIC_DEFAULTS", {})
-    for col in numeric_cols:
-        if col not in df.columns:
-            default_val = baseline_stats.get(col, {}).get("mean", 0.0)
-            df[col] = default_val
+    missing_features = [col for col in numeric_cols if col not in df.columns]
+    if missing_features:
+        log.warning(
+            "Отсутствуют признаки %s — заполнены из baseline статистик (потенциальная утечка данных)",
+            missing_features,
+        )
+    for col in missing_features:
+        default_val = baseline_stats.get(col, {}).get("mean", 0.0)
+        df[col] = default_val
 
     return df, ignored_features
+
+
+def _predict_with_model(
+    application: FastAPI,
+    model: Any,
+    texts: list[str],
+    numeric_features: dict[str, list[float]] | None = None,
+) -> tuple[list[int], list[list[float]] | None, list[str] | None]:
+    """Единая логика предсказаний.
+
+    Если модель DistilBERT — используем только тексты.
+    Иначе собираем DataFrame с числовыми признаками.
+    """
+    is_text_only = not hasattr(model, "named_steps") or (
+        hasattr(model, "named_steps") and "pre" not in getattr(model, "named_steps", {})
+    )
+    if is_text_only:
+        preds = model.predict(pd.Series(texts))
+        probs: list[list[float]] | None = None
+        if hasattr(model, "predict_proba"):
+            try:
+                probs_arr = model.predict_proba(pd.Series(texts))
+                probs = [row.tolist() for row in probs_arr]
+            except (ValueError, TypeError):
+                probs = None
+        return [int(x) for x in preds], probs, None
+
+    df, ignored = _build_dataframe(application, texts, numeric_features)
+    preds = model.predict(df)
+    probs: list[list[float]] | None = None
+    if hasattr(model, "predict_proba"):
+        try:
+            probs_arr = model.predict_proba(df)
+            probs = [row.tolist() for row in probs_arr]
+        except (ValueError, TypeError):
+            probs = None
+    return [int(x) for x in preds], probs, ignored or None
 
 
 app = create_app()

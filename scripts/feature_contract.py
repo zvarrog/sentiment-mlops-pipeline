@@ -21,11 +21,7 @@ class FeatureContract:
 
     @classmethod
     def from_model_artifacts(cls, model_artefact_dir: Path) -> "FeatureContract":
-        """Создаёт контракт из артефактов модели.
-
-        Использует реальные признаки из baseline_numeric_stats.json или model_schema.json.
-        Если артефакты отсутствуют — выбрасывает ошибку.
-        """
+        """Создаёт контракт из baseline_numeric_stats.json или model_schema.json."""
         baseline_path = model_artefact_dir / "baseline_numeric_stats.json"
         schema_path = model_artefact_dir / "model_schema.json"
         baseline_stats = None
@@ -40,7 +36,7 @@ class FeatureContract:
                 baseline_stats = None
             # Ориентируемся на ключи baseline (реально использованные признаки)
             if isinstance(baseline_stats, dict) and baseline_stats:
-                expected_numeric = [str(k) for k in baseline_stats.keys()]
+                expected_numeric = [str(k) for k in baseline_stats]
 
         # Фактически использованные числовые признаки из схемы
         if schema_path.exists():
@@ -99,11 +95,14 @@ class FeatureContract:
                     values = [data[col]]
 
                 for i, val in enumerate(values):
-                    if isinstance(val, (int, float)):
-                        if std > 0 and abs(val - mean) > 3 * std:
-                            outlier_warnings.append(
-                                f"{col}[{i}]: {val} (expected ~{mean:.2f}±{3 * std:.2f})"
-                            )
+                    if (
+                        isinstance(val, (int, float))
+                        and std > 0
+                        and abs(val - mean) > 3 * std
+                    ):
+                        outlier_warnings.append(
+                            f"{col}[{i}]: {val} (expected ~{mean:.2f}±{3 * std:.2f})"
+                        )
 
         if missing_numeric:
             warnings["missing_numeric_columns"] = missing_numeric

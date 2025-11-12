@@ -1,6 +1,5 @@
-"""Training pipeline with Optuna hyperparameter optimization and MLflow tracking."""
+"""Пайплайн обучения с оптимизацией гиперпараметров Optuna и отслеживанием MLflow."""
 
-import contextlib
 import json
 import logging
 import os
@@ -18,43 +17,39 @@ import pandas as pd
 import sklearn
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    f1_score,
-)
+from sklearn.metrics import classification_report
 from sklearn.pipeline import Pipeline
 
 from scripts.config import (
-    DISTILBERT_TIMEOUT_SEC,
-    EARLY_STOP_PATIENCE,
-    MIN_TRIALS_BEFORE_EARLY_STOP,
+    BEST_MODEL_PATH,
     MLFLOW_TRACKING_URI,
     MODEL_ARTEFACTS_DIR,
-    MODEL_FILE_DIR,
+    MODEL_DIR,
     N_FOLDS,
-    OPTUNA_N_TRIALS,
     OPTUNA_STORAGE,
-    OPTUNA_TIMEOUT_SEC,
     SEED,
     SELECTED_MODEL_KINDS,
     STUDY_BASE_NAME,
     TRAIN_DEVICE,
-    log,
 )
+from scripts.constants import NUMERIC_COLS
+from scripts.logging_config import get_logger
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
-from scripts.train_modules.data_loading import load_splits
-from scripts.train_modules.evaluation import compute_metrics
-from scripts.train_modules.feature_space import NUMERIC_COLS
-from scripts.train_modules.pipeline_builders import ModelBuilderFactory
+from scripts.train_modules import (
+    ModelBuilderFactory,
+    compute_metrics,
+    load_splits,
+    log_confusion_matrix,
+    optimize_model,
+)
 
-# Подавляем избыточные предупреждения
+log = get_logger("train")
+
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 warnings.filterwarnings("ignore", category=UserWarning, module="optuna")
 
-# Подавляем MLflow/Git логи
 logging.getLogger("mlflow").setLevel(logging.ERROR)
 logging.getLogger("optuna").setLevel(logging.ERROR)
 logging.getLogger("git").setLevel(logging.ERROR)
@@ -66,36 +61,17 @@ OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
 
 
 def log_artifact_safe(path: Path, artifact_name: str) -> None:
-    """Безопасная логирование артефакта в MLflow с обработкой ошибок.
-
-    Args:
-        path: Путь к файлу артефакта
-        artifact_name: Описательное имя артефакта для логирования
-
-    Note:
-        Функция использует graceful degradation - при ошибке записывается warning,
-        но выполнение программы продолжается. Это предотвращает прерывание обучения
-        из-за проблем с MLflow tracking server.
-    """
+    """Безопасное логирование артефакта в MLflow."""
     try:
         mlflow.log_artifact(str(path))
     except Exception as e:
-        log.warning("Не удалось залогировать %s артефакт: %s", artifact_name, e)
+        log.warning("Не удалось залогировать %s: %s", artifact_name, e)
 
 
 def build_pipeline(
     trial: optuna.Trial, model_name, fixed_solver: str | None = None
 ) -> Pipeline:
-    """Создаёт Pipeline для указанной модели используя фабрику строителей.
-
-    Args:
-        trial: Объект trial Optuna для предложения гиперпараметров.
-        model_name: Тип модели (ModelKind или строка).
-        fixed_solver: Фиксированный солвер для LogReg (опционально).
-
-    Returns:
-        Настроенный Pipeline для модели.
-    """
+    """Создаёт Pipeline для модели через фабрику строителей."""
     model_kind: ModelKind
     if isinstance(model_name, ModelKind):
         model_kind = model_name
@@ -104,117 +80,6 @@ def build_pipeline(
 
     builder = ModelBuilderFactory.get_builder(model_kind, trial, fixed_solver)
     return builder.build()
-
-
-def log_confusion_matrix(y_true, y_pred, path: Path):
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    cm = confusion_matrix(y_true, y_pred)
-    fig, ax = plt.subplots(figsize=(4, 4))
-    im = ax.imshow(cm, cmap="Blues")
-    ax.set_title("Confusion Matrix")
-    ax.set_xlabel("Pred")
-    ax.set_ylabel("True")
-    for (i, j), v in np.ndenumerate(cm):
-        ax.text(j, i, str(v), ha="center", va="center", fontsize=8)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-
-
-def objective(
-    trial: optuna.Trial,
-    model_name: ModelKind | str,
-    x_train: pd.DataFrame,
-    y_train: np.ndarray,
-    x_val: pd.DataFrame,
-    y_val: np.ndarray,
-) -> float:
-    model_kind: ModelKind = (
-        model_name if isinstance(model_name, ModelKind) else ModelKind(str(model_name))
-    )
-    trial.set_user_attr(
-        "numeric_cols", [c for c in NUMERIC_COLS if c in x_train.columns]
-    )
-    trial.set_user_attr("n_train_samples", len(x_train))
-    mlflow.log_param("model", model_kind.value)
-
-    def _evaluate_with_cv_or_holdout(is_distilbert: bool) -> float:
-        if N_FOLDS > 1:
-            from sklearn.model_selection import StratifiedKFold
-
-            skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
-            f1_scores: list[float] = []
-            if is_distilbert:
-                texts = x_train["reviewText"].values
-                for tr_idx, va_idx in skf.split(texts, y_train):
-                    x_tr, x_va = texts[tr_idx], texts[va_idx]
-                    y_tr, y_va = y_train[tr_idx], y_train[va_idx]
-                    pipe = build_pipeline(trial, model_kind)
-                    pipe.fit(x_tr, y_tr)
-                    preds_fold = pipe.predict(x_va)
-                    f1_scores.append(f1_score(y_va, preds_fold, average="macro"))
-            else:
-                for tr_idx, va_idx in skf.split(x_train, y_train):
-                    x_tr, x_va = x_train.iloc[tr_idx], x_train.iloc[va_idx]
-                    y_tr, y_va = y_train[tr_idx], y_train[va_idx]
-                    pipe = build_pipeline(trial, model_kind)
-                    pipe.fit(x_tr, y_tr)
-                    preds_fold = pipe.predict(x_va)
-                    f1_scores.append(f1_score(y_va, preds_fold, average="macro"))
-
-            mean_f1 = float(np.mean(f1_scores))
-            mlflow.log_metric("cv_f1_macro", mean_f1)
-            return mean_f1
-        pipe = build_pipeline(trial, model_kind)
-        if is_distilbert:
-            pipe.fit(x_train["reviewText"], y_train)
-            preds = pipe.predict(x_val["reviewText"])
-        else:
-            pipe.fit(x_train, y_train)
-            preds = pipe.predict(x_val)
-        metrics = compute_metrics(y_val, preds)
-        mlflow.log_metrics(metrics)
-        return metrics["f1_macro"]
-
-    if model_kind is ModelKind.distilbert:
-        try:
-            return _evaluate_with_cv_or_holdout(is_distilbert=True)
-        except ImportError as e:
-            mlflow.log_param("skipped", f"missing_deps: {e}")
-            return 0.0
-
-    return _evaluate_with_cv_or_holdout(is_distilbert=False)
-
-
-def _early_stop_callback(patience: int, min_trials: int):
-    if patience is None or patience < 1:
-        log.warning("patience<1 в early stop, использую значение 1")
-        patience = 1
-    best = {"value": -1, "since": 0, "count": 0}
-
-    def cb(study: optuna.Study, trial: optuna.Trial):
-        if trial.value is None:
-            return
-        best["count"] += 1
-        if trial.value > best["value"] + 1e-9:
-            best["value"] = trial.value
-            best["since"] = 0
-        else:
-            best["since"] += 1
-        if best["count"] < max(1, min_trials):
-            return
-        if best["since"] >= patience:
-            log.info("Early stop: нет улучшений %d трейлов", patience)
-            with contextlib.suppress(Exception):
-                study.set_user_attr("early_stopped", True)
-            study.stop()
-
-    return cb
 
 
 def _get_feature_names(preprocessor: ColumnTransformer, use_svd: bool) -> list[str]:
@@ -285,18 +150,8 @@ def _extract_feature_importances(
 
 
 def run():
-    import mlflow
-
-    from .logging_config import setup_training_logging
-
-    setup_training_logging()
-
-    shutdown_requested = False
-
     def signal_handler(signum, frame):
-        nonlocal shutdown_requested
-        log.warning(f"Получен сигнал {signum} (SIGTERM/SIGINT), завершаю обучение...")
-        shutdown_requested = True
+        log.warning("Получен сигнал %d, завершаю обучение...", signum)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, signal_handler)
@@ -305,26 +160,27 @@ def run():
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
-    MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_ARTEFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    best_path = MODEL_FILE_DIR / "best_model.joblib"
 
     from scripts.config import FORCE_TRAIN
 
     force_train = FORCE_TRAIN
-    log.info("FORCE_TRAIN=%s, наличие best_model=%s", force_train, best_path.exists())
+    log.info(
+        "FORCE_TRAIN=%s, наличие best_model=%s", force_train, BEST_MODEL_PATH.exists()
+    )
 
     from scripts.model_registry import load_old_model_metric
 
     old_model_metric = load_old_model_metric()
 
-    if best_path.exists() and not force_train:
+    if BEST_MODEL_PATH.exists() and not force_train:
         log.info("Модель уже существует и FORCE_TRAIN=False — пропуск")
         return
 
-    X_train, X_val, X_test, y_train, y_val, y_test = load_splits()
+    x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
     log.info(
-        "Размеры: train=%d, val=%d, test=%d", len(X_train), len(X_val), len(X_test)
+        "Размеры: train=%d, val=%d, test=%d", len(x_train), len(x_val), len(x_test)
     )
 
     mlflow.set_experiment(EXPERIMENT_NAME)
@@ -336,7 +192,7 @@ def run():
             {
                 "seed": SEED,
                 "numeric_cols": ",".join(
-                    [c for c in NUMERIC_COLS if c in X_train.columns]
+                    [c for c in NUMERIC_COLS if c in x_train.columns]
                 ),
                 "text_clean_stage": "spark_process",
                 "cv_n_folds": N_FOLDS,
@@ -354,120 +210,37 @@ def run():
         )
 
         # baseline статистики числовых признаков
-        baseline_stats: dict[str, dict[str, float]] = {}
-        for c in [c for c in NUMERIC_COLS if c in X_train.columns]:
-            s = X_train[c]
-            baseline_stats[c] = {"mean": float(s.mean()), "std": float(s.std() or 0.0)}
-        _baseline_stats_cached = baseline_stats
+        from scripts.utils import get_baseline_stats
 
-        # Оптимизируем каждую модель в своей study
+        baseline_stats = get_baseline_stats(x_train)
+
+        # Оптимизируем каждую модель
         per_model_results: dict[ModelKind, dict[str, object]] = {}
 
-        for model_name in SELECTED_MODEL_KINDS:
-            pruner = optuna.pruners.MedianPruner(n_startup_trials=5)
-            study_name = f"{STUDY_BASE_NAME}_{model_name.value}_{_model_sig}"
-            with mlflow.start_run(nested=True, run_name=f"model={model_name.value}"):
-                study = optuna.create_study(
-                    direction="maximize",
-                    pruner=pruner,
-                    storage=OPTUNA_STORAGE,
-                    study_name=study_name,
-                    load_if_exists=True,
+        for model_kind in SELECTED_MODEL_KINDS:
+            with mlflow.start_run(nested=True, run_name=f"model={model_kind.value}"):
+                log.info("Начало оптимизации модели: %s", model_kind.value)
+
+                study = optimize_model(
+                    STUDY_BASE_NAME,
+                    model_kind,
+                    x_train,
+                    y_train,
+                    x_val,
+                    y_val,
+                    OPTUNA_STORAGE,
                 )
-                # Количество успешных трейлов до начала текущего запуска
-                existing_trials_before = len(
-                    [t for t in study.trials if t.value is not None]
-                )
-                mlflow.log_param("study_name", study_name)
 
-                def opt_obj(trial, model_name=model_name):
-                    with mlflow.start_run(nested=True):
-                        result = objective(
-                            trial,
-                            model_name,
-                            X_train,
-                            y_train,
-                            X_val,
-                            y_val,
-                        )
-                        log.info(
-                            "Trial %d (%s): value=%.4f, params=%s",
-                            trial.number,
-                            model_name.value,
-                            result,
-                            trial.params,
-                        )
-                        return result
+                if not study.trials or not study.best_trial:
+                    log.warning("%s: нет успешных trials — пропуск", model_kind.value)
+                    continue
 
-                stop_reason = None
-                try:
-                    # Персональный таймаут для тяжёлых моделей
-                    timeout_sec = (
-                        DISTILBERT_TIMEOUT_SEC
-                        if model_name is ModelKind.distilbert
-                        else OPTUNA_TIMEOUT_SEC
-                    )
-                    study.optimize(
-                        opt_obj,
-                        n_trials=OPTUNA_N_TRIALS,
-                        timeout=timeout_sec,
-                        callbacks=[
-                            _early_stop_callback(
-                                EARLY_STOP_PATIENCE, MIN_TRIALS_BEFORE_EARLY_STOP
-                            )
-                        ],
-                        show_progress_bar=False,
-                    )
-                    if study.user_attrs.get("early_stopped", False):
-                        stop_reason = "early_stop"
-                except KeyboardInterrupt:
-                    stop_reason = "keyboard_interrupt"
-                except (RuntimeError, ValueError, optuna.exceptions.OptunaError) as e:
-                    stop_reason = f"error: {e}"
-
-                if stop_reason == "early_stop":
-                    log.info(
-                        "Optuna: остановка по ранней остановке (patience=%d)",
-                        EARLY_STOP_PATIENCE,
-                    )
-                elif stop_reason == "keyboard_interrupt":
-                    log.info("Optuna: остановка по KeyboardInterrupt")
-                elif stop_reason:
-                    log.info("Optuna: остановка по ошибке: %s", stop_reason)
-                else:
-                    log.info("Optuna: успешное завершение всех trial'ов")
-
-                best_trial = None
-                try:
-                    if len([t for t in study.trials if t.value is not None]) > 0:
-                        best_trial = study.best_trial
-                except (ValueError, optuna.exceptions.OptunaError) as e:
-                    log.warning(
-                        "%s: ошибка получения best_trial: %s", model_name.value, e
-                    )
-
-                if not best_trial or best_trial.value is None:
-                    log.warning("%s: нет успешных trial'ов — пропуск", model_name.value)
-                else:
-                    # Вычисляем свежий максимум относительно исторического количества трейлов
-                    fresh_vals = [
-                        t.value
-                        for t in study.trials
-                        if t.value is not None and t.number >= existing_trials_before
-                    ]
-                    fresh_best = max(fresh_vals) if fresh_vals else None
-                    cur = per_model_results.get(model_name)
-                    # Используем свежий best если он существует, иначе общий
-                    effective_best_value = (
-                        fresh_best if fresh_best is not None else best_trial.value
-                    )
-                    new_entry = {
-                        "best_value": effective_best_value,
-                        "best_params": best_trial.params,
-                        "study_name": study_name,
-                    }
-                    if cur is None or new_entry["best_value"] > cur["best_value"]:
-                        per_model_results[model_name] = new_entry
+                best_trial = study.best_trial
+                per_model_results[model_kind] = {
+                    "best_value": best_trial.value,
+                    "best_params": best_trial.params,
+                    "study_name": study.study_name,
+                }
 
         if not per_model_results:
             log.error("Нет ни одного успешного результата оптимизации — выход")
@@ -483,7 +256,6 @@ def run():
         if not should_replace_model(
             new_model_metric, old_model_metric, best_model.value
         ):
-            log.info("Обучение завершено без замены модели")
             return
 
         log.info(
@@ -494,7 +266,7 @@ def run():
         mlflow.log_metric("best_val_f1_macro", best_info["best_value"])
 
         # Retrain на train+val
-        X_full = pd.concat([X_train, X_val], axis=0, ignore_index=True)
+        x_full = pd.concat([x_train, x_val], axis=0, ignore_index=True)
         y_full = np.concatenate([np.asarray(y_train), np.asarray(y_val)], axis=0)
         best_params = best_info["best_params"]
 
@@ -510,51 +282,37 @@ def run():
                 device=TRAIN_DEVICE,
                 use_bigrams=use_bi,
             )
-            final_pipeline.fit(X_full["reviewText"], y_full)
+            final_pipeline.fit(x_full["reviewText"], y_full)
         else:
             fixed_trial = optuna.trial.FixedTrial(best_params)
             # Прокидываем список доступных числовых колонок через user_attrs
             fixed_trial.set_user_attr(
-                "numeric_cols", [c for c in NUMERIC_COLS if c in X_full.columns]
+                "numeric_cols", [c for c in NUMERIC_COLS if c in x_full.columns]
             )
             final_pipeline = build_pipeline(fixed_trial, best_model)
-            final_pipeline.fit(X_full, y_full)
+            final_pipeline.fit(x_full, y_full)
 
-        # Атомарная запись модели с очисткой временного файла
-        tmp_model_path = best_path.with_suffix(".joblib.tmp")
-        try:
-            joblib.dump(final_pipeline, tmp_model_path)
-            tmp_model_path.replace(best_path)
-        finally:
-            if tmp_model_path.exists():
-                tmp_model_path.unlink()
-
-        log_artifact_safe(best_path, "best_model")
+        joblib.dump(final_pipeline, BEST_MODEL_PATH)
+        log_artifact_safe(BEST_MODEL_PATH, "best_model")
 
         bs_path = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
-        tmp_bs = bs_path.with_suffix(".json.tmp")
-        try:
-            with open(tmp_bs, "w", encoding="utf-8") as f:
-                json.dump(_baseline_stats_cached, f, ensure_ascii=False, indent=2)
-            tmp_bs.replace(bs_path)
-        finally:
-            if tmp_bs.exists():
-                tmp_bs.unlink()
-
+        bs_path.write_text(
+            json.dumps(baseline_stats, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         log_artifact_safe(bs_path, "baseline_stats")
 
         # Тестовая оценка (до регистрации в MLflow Registry)
         if best_model is ModelKind.distilbert:
-            test_preds = final_pipeline.predict(X_test["reviewText"])
+            test_preds = final_pipeline.predict(x_test["reviewText"])
         else:
-            test_preds = final_pipeline.predict(X_test)
+            test_preds = final_pipeline.predict(x_test)
         test_metrics = compute_metrics(y_test, test_preds)
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
 
         from scripts.model_registry import register_model_in_mlflow
 
         register_model_in_mlflow(
-            best_path,
+            BEST_MODEL_PATH,
             best_model,
             test_metrics.get("f1_macro", 0.0),
             mlflow_run_active=True,
@@ -575,11 +333,13 @@ def run():
                 use_svd_flag = False
                 try:
                     # Предпочитаем детектировать по финальному пайплайну
-                    pre: ColumnTransformer = final_pipeline.named_steps.get("pre")
+                    pre: ColumnTransformer | None = final_pipeline.named_steps.get(
+                        "pre"
+                    )
                     if pre is not None:
                         text_pipe: Pipeline = pre.named_transformers_["text"]
                         use_svd_flag = "svd" in getattr(text_pipe, "named_steps", {})
-                except Exception:
+                except (KeyError, AttributeError):
                     # Фолбэк по best_params
                     use_svd_flag = bool(best_params.get("use_svd", False))
 
@@ -589,7 +349,7 @@ def run():
                     with open(fi_path, "w", encoding="utf-8") as f:
                         json.dump(fi_list, f, ensure_ascii=False, indent=2)
                     log_artifact_safe(fi_path, "feature_importances")
-            except Exception as e:
+            except (OSError, ValueError, KeyError, AttributeError) as e:
                 log.warning("Не удалось сохранить feature importances: %s", e)
 
         # Снимок лучших трейлов Optuna (top-K)
@@ -619,7 +379,7 @@ def run():
                     csv_path = MODEL_ARTEFACTS_DIR / "optuna_top_trials.csv"
                     df.to_csv(csv_path, index=False)
                     log_artifact_safe(csv_path, "optuna_top_trials")
-        except Exception as e:
+        except (ValueError, KeyError, AttributeError, OSError) as e:
             log.warning("Не удалось сохранить топ-K трейлов Optuna: %s", e)
 
         # Схема входа/выхода модели и реально использованные фичи
@@ -638,7 +398,7 @@ def run():
                     try:
                         # numeric фичи брались из второго трансформера
                         numeric_cols_used = list(pre.transformers_[1][2])
-                    except Exception:
+                    except (KeyError, IndexError, AttributeError):
                         numeric_cols_used = []
                     try:
                         text_pipe: Pipeline = pre.named_transformers_["text"]
@@ -652,7 +412,7 @@ def run():
                                 else 0
                             )
                             text_dim = int(vocab_size)
-                    except Exception:
+                    except (KeyError, AttributeError):
                         pass
                 text_info["text_dim"] = text_dim if text_dim is not None else "unknown"
                 schema["input"] = {
@@ -666,15 +426,15 @@ def run():
             with open(schema_path, "w", encoding="utf-8") as f:
                 json.dump(schema, f, ensure_ascii=False, indent=2)
             log_artifact_safe(schema_path, "model_schema")
-        except Exception as e:
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
             log.warning("Не удалось сохранить схему модели: %s", e)
 
         # 4) ROC/PR кривые по тесту (если у модели есть predict_proba)
         try:
             if best_model is ModelKind.distilbert:
-                x_for_proba = X_test["reviewText"]
+                x_for_proba = x_test["reviewText"]
             else:
-                x_for_proba = X_test
+                x_for_proba = x_test
             if hasattr(final_pipeline, "predict_proba"):
                 from sklearn.metrics import (
                     auc,
@@ -698,7 +458,7 @@ def run():
                     # Предполагаем порядок классов как в model.classes_, если доступен
                     try:
                         cls_model = list(getattr(final_pipeline, "classes_", []))
-                    except Exception:
+                    except AttributeError:
                         cls_model = []
                     for j, c in enumerate(classes):
                         if cls_model and c in cls_model:
@@ -746,13 +506,13 @@ def run():
                 fig_pr.savefig(pr_path)
                 plt.close(fig_pr)
                 log_artifact_safe(pr_path, "pr_curve")
-        except Exception as e:
+        except (ValueError, OSError, RuntimeError) as e:
             log.warning("Не удалось построить ROC/PR кривые: %s", e)
 
         # Ошибки классификации (первые 200)
         mis_idx = np.where(test_preds != y_test)[0]
         if len(mis_idx):
-            mis_samples = X_test.iloc[mis_idx].copy()
+            mis_samples = x_test.iloc[mis_idx].copy()
             mis_samples["true"] = y_test[mis_idx]
             mis_samples["pred"] = test_preds[mis_idx]
 
@@ -764,23 +524,19 @@ def run():
         mlflow.log_metric("training_duration_sec", duration)
 
         meta = {
-            # Сохраняем строковое значение Enum для JSON-сериализации
             "best_model": (
                 best_model.value if hasattr(best_model, "value") else str(best_model)
             ),
             "best_params": best_params,
             "best_val_f1_macro": best_info["best_value"],
             "test_metrics": test_metrics,
-            "sizes": {"train": len(X_train), "val": len(X_val), "test": len(X_test)},
+            "sizes": {"train": len(x_train), "val": len(x_val), "test": len(x_test)},
             "duration_sec": duration,
         }
-        # Атомарная запись метаданных
         _meta_path = MODEL_ARTEFACTS_DIR / "best_model_meta.json"
-        _meta_tmp = _meta_path.with_suffix(".json.tmp")
-        with open(_meta_tmp, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-        _meta_tmp.replace(_meta_path)
-    log.info("Завершено. Лучшая модель сохранена: %s", best_path)
+        _meta_path.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 if __name__ == "__main__":

@@ -5,8 +5,6 @@ from transformers import AutoModel, AutoTokenizer
 
 
 class DistilBertClassifier(BaseEstimator, ClassifierMixin):
-    """Лёгкая обёртка DistilBERT: замороженный encoder + линейная голова."""
-
     def __init__(
         self,
         epochs=1,
@@ -14,10 +12,9 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         max_len=128,
         batch_size=8,
         seed=42,
-        use_bigrams=False,
+        use_bigrams: bool = False,
         device=None,
     ):
-        """DistilBERT classifier with frozen encoder and linear head."""
         self.epochs = epochs
         self.lr = lr
         self.max_len = max_len
@@ -33,7 +30,6 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         self._classes_ = None
 
     def _tokenize(self, texts, return_tensors: str = "pt"):
-        """Вызов токенизатора без clean_up_tokenization_spaces."""
         return self._tokenizer(
             list(texts),
             truncation=True,
@@ -42,19 +38,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
             return_tensors=return_tensors,
         )
 
-    @staticmethod
-    def _augment_texts(texts):
-        """Add bigrams to texts for improved classification quality."""
-
-        def _augment_bigrams(s: str) -> str:
-            ws = s.split()
-            bigrams = [f"{ws[i]}_{ws[i + 1]}" for i in range(len(ws) - 1)]
-            return s + (" " + " ".join(bigrams[:20]) if bigrams else "")
-
-        return np.array([_augment_bigrams(t) for t in texts])
-
     def _get_device(self):
-        """Determine device for model operations (GPU if available, otherwise CPU)."""
         if self._head is not None:
             try:
                 return next(self._head.parameters()).device
@@ -67,24 +51,14 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 pass
         return self._device_actual or torch.device("cpu")
 
-    def fit(self, X, y, X_val=None, y_val=None):
-        """Train classifier on texts with frozen DistilBERT encoder.
-
-        Args:
-            X: Training texts
-            y: Training labels
-            X_val: Optional validation texts for early stopping
-            y_val: Optional validation labels for early stopping
-        """
+    def fit(self, x, y, x_val=None, y_val=None):
         torch.manual_seed(self.seed)
-        texts = X if isinstance(X, (list, np.ndarray)) else X.values
-        if self.use_bigrams:
-            texts = self._augment_texts(texts)
+        texts = x if isinstance(x, (list, np.ndarray)) else x.values
 
         self._tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
         self._base_model = AutoModel.from_pretrained("distilbert-base-uncased")
 
-        # Автовыбор device
+        # Автовыбор устройства
         device_str = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         import logging
@@ -92,7 +66,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         log = logging.getLogger(__name__)
         log.info(f"DistilBERT training on device: {device_str}")
 
-        # Валидация device
+        # Валидация устройства
         if device_str not in ["cpu", "cuda"] and not device_str.startswith("cuda:"):
             log.warning(f"Invalid device '{device_str}', falling back to 'cpu'")
             device_str = "cpu"
@@ -113,13 +87,11 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         loss_fn = torch.nn.CrossEntropyLoss()
         self._base_model.eval()
 
-        # Подготовка validation set для early stopping
+        # Подготовка validation set для ранней остановки
         val_texts = None
         val_labels = None
-        if X_val is not None and y_val is not None:
-            val_texts = X_val if isinstance(X_val, (list, np.ndarray)) else X_val.values
-            if self.use_bigrams:
-                val_texts = self._augment_texts(val_texts)
+        if x_val is not None and y_val is not None:
+            val_texts = x_val if isinstance(x_val, (list, np.ndarray)) else x_val.values
             val_labels = np.vectorize(label2idx.get)(y_val).astype(int)
 
         def batch_iter(texts_batch, labels_batch):
@@ -131,10 +103,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
 
         best_val_loss = float("inf")
         patience_counter = 0
-
-        from scripts.config import DISTILBERT_EARLY_STOP_PATIENCE
-
-        patience = DISTILBERT_EARLY_STOP_PATIENCE
+        patience = 3
 
         for epoch in range(self.epochs):
             self._head.train()
@@ -205,23 +174,10 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         self._fitted = True
         return self
 
-    def predict(self, X):
-        """Предсказывает классы для текстов.
-
-        Args:
-            X: Тексты (list, np.ndarray или DataFrame)
-
-        Returns:
-            np.ndarray: Предсказанные классы
-
-        Raises:
-            RuntimeError: Если модель не обучена
-        """
+    def predict(self, x):
         if not self._fitted:
             raise RuntimeError("DistilBertClassifier не обучен")
-        texts = X if isinstance(X, (list, np.ndarray)) else X.values
-        if self.use_bigrams:
-            texts = self._augment_texts(texts)
+        texts = x if isinstance(x, (list, np.ndarray)) else x.values
         preds = []
         device = self._get_device()
         for i in range(0, len(texts), self.batch_size):
@@ -236,15 +192,12 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         preds = np.array(preds)
         return self._classes_[preds]
 
-    def predict_proba(self, X):
-        """Вероятности классов (softmax по логитам) в порядке self._classes_."""
+    def predict_proba(self, x):
         if not self._fitted:
             raise RuntimeError("DistilBertClassifier не обучен")
-        import torch.nn.functional as F  # локальный импорт
+        import torch.nn.functional as func
 
-        texts = X if isinstance(X, (list, np.ndarray)) else X.values
-        if self.use_bigrams:
-            texts = self._augment_texts(texts)
+        texts = x if isinstance(x, (list, np.ndarray)) else x.values
         device = self._get_device()
         all_probs = []
         for i in range(0, len(texts), self.batch_size):
@@ -255,35 +208,17 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 out = self._base_model(**enc)
                 cls = out.last_hidden_state[:, 0]
                 logits = self._head(cls)
-                probs = F.softmax(logits, dim=1).cpu().numpy()
+                probs = func.softmax(logits, dim=1).cpu().numpy()
                 all_probs.append(probs)
         if not all_probs:
             return np.zeros((0, len(self._classes_)), dtype=float)
         return np.vstack(all_probs)
 
     def __getstate__(self):
-        """Перед сериализацией переносим веса на CPU, чтобы обеспечить безопасную загрузку в окружениях без CUDA."""
         state = self.__dict__.copy()
-        try:
-            if self._base_model is not None:
-                self._base_model.to("cpu")
-            if self._head is not None:
-                self._head.to("cpu")
-            # Фиксируем девайс как CPU в сохранённом состоянии
-            state["_device_actual"] = torch.device("cpu")
-        except Exception:
-            pass
+        state["_device_actual"] = torch.device("cpu")
         return state
 
     def __setstate__(self, state):
-        """Восстанавливаем состояние; гарантируем CPU-девайс по умолчанию после загрузки."""
         self.__dict__.update(state)
-        try:
-            self._device_actual = torch.device("cpu")
-            # Модели уже на CPU (см. __getstate__), но на всякий случай
-            if self._base_model is not None:
-                self._base_model.to("cpu")
-            if self._head is not None:
-                self._head.to("cpu")
-        except Exception:
-            pass
+        self._device_actual = torch.device("cpu")

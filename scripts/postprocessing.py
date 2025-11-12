@@ -31,23 +31,16 @@ log = get_logger("postprocessing")
 
 
 def _save_baseline_numeric_stats(x_train: pd.DataFrame, out_dir: Path) -> Path:
-    from scripts.train_modules.feature_space import NUMERIC_COLS
+    from scripts.utils import atomic_write_json, get_baseline_stats
 
-    baseline_stats: dict[str, dict[str, float]] = {}
-    for c in [c for c in NUMERIC_COLS if c in x_train.columns]:
-        s = x_train[c]
-        baseline_stats[c] = {"mean": float(s.mean()), "std": float(s.std() or 0.0)}
-
+    baseline_stats = get_baseline_stats(x_train)
     out_path = Path(out_dir) / "baseline_numeric_stats.json"
-    tmp = out_path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(baseline_stats, f, ensure_ascii=False, indent=2)
-    tmp.replace(out_path)
+    atomic_write_json(out_path, baseline_stats)
     return out_path
 
 
 def _save_confusion_and_report(y_true, y_pred, out_dir: Path) -> tuple[Path, Path]:
-    from scripts.train import log_confusion_matrix
+    from scripts.train_modules.evaluation import log_confusion_matrix
 
     out_dir = Path(out_dir)
     cm_path = out_dir / "confusion_matrix_test.png"
@@ -63,21 +56,27 @@ def _save_feature_importances(pipeline, out_dir: Path) -> Path | None:
     from scripts.train import _extract_feature_importances
 
     try:
+        pre = (
+            getattr(pipeline, "named_steps", {}).get("pre")
+            if hasattr(pipeline, "named_steps")
+            else None
+        )
         use_svd_flag = False
-        try:
-            pre = getattr(pipeline, "named_steps", {}).get("pre")
-            if pre is not None:
-                text_pipe = pre.named_transformers_["text"]
-                use_svd_flag = "svd" in getattr(text_pipe, "named_steps", {})
-        except Exception:
-            use_svd_flag = False
+        if (
+            pre is not None
+            and hasattr(pre, "named_transformers_")
+            and "text" in pre.named_transformers_
+        ):
+            text_pipe = pre.named_transformers_["text"]
+            use_svd_flag = "svd" in getattr(text_pipe, "named_steps", {})
+
         fi_list = _extract_feature_importances(pipeline, use_svd_flag)
         if fi_list:
             fi_path = Path(out_dir) / "feature_importances.json"
             with open(fi_path, "w", encoding="utf-8") as f:
                 json.dump(fi_list, f, ensure_ascii=False, indent=2)
             return fi_path
-    except Exception as e:
+    except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
         log.warning("Не удалось сохранить feature importances: %s", e)
     return None
 
@@ -96,7 +95,7 @@ def _save_schema(pipeline, classes, x_train: pd.DataFrame, out_dir: Path) -> Pat
         if pre is not None:
             try:
                 numeric_cols_used = list(pre.transformers_[1][2])
-            except Exception:
+            except (KeyError, IndexError, AttributeError, TypeError):
                 numeric_cols_used = []
             try:
                 text_pipe: SkPipeline = pre.named_transformers_["text"]
@@ -110,7 +109,7 @@ def _save_schema(pipeline, classes, x_train: pd.DataFrame, out_dir: Path) -> Pat
                         else 0
                     )
                     text_dim = int(vocab_size)
-            except Exception:
+            except (KeyError, AttributeError):
                 pass
         text_info["text_dim"] = text_dim if text_dim is not None else "unknown"
         schema["input"] = {"text": text_info, "numeric_features": numeric_cols_used}
@@ -159,7 +158,7 @@ def _save_roc_pr(
             )
             try:
                 cls_model = list(getattr(pipeline, "classes_", []))
-            except Exception:
+            except AttributeError:
                 cls_model = []
             for j, c in enumerate(classes):
                 if cls_model and c in cls_model:
@@ -198,7 +197,7 @@ def _save_roc_pr(
         plt.close(fig_pr)
 
         return roc_path, pr_path
-    except Exception as e:
+    except (ValueError, OSError, RuntimeError) as e:
         log.warning("Не удалось построить ROC/PR: %s", e)
         return None, None
 
@@ -216,7 +215,7 @@ def _save_misclassified(
         out_path = Path(out_dir) / "misclassified_samples_test.csv"
         mis_samples.head(200).to_csv(out_path, index=False)
         return out_path
-    except Exception as e:
+    except (OSError, ValueError, TypeError) as e:
         log.warning("Не удалось сохранить ошибки классификации: %s", e)
         return None
 
@@ -254,7 +253,7 @@ def generate_best_bundle(
             else x_test["reviewText"]
         )
         test_preds = pipeline.predict(x_for_test)
-    except Exception:
+    except (ValueError, TypeError, AttributeError, RuntimeError):
         test_preds = None
 
     # 3) отчеты по тесту
@@ -291,9 +290,9 @@ def generate_best_bundle(
         "sizes": sizes,
     }
     meta_path = out_dir / "best_model_meta.json"
-    tmp = meta_path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-    tmp.replace(meta_path)
+
+    from scripts.utils import atomic_write_json
+
+    atomic_write_json(meta_path, meta)
 
     return meta
