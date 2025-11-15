@@ -3,7 +3,7 @@ import json
 import signal
 import time
 from contextlib import asynccontextmanager
-from typing import Any, TypedDict
+from typing import Any
 
 import joblib
 import pandas as pd
@@ -33,22 +33,6 @@ log = get_logger("api_service")
 
 MAX_TEXT_LENGTH = 10_000
 MAX_BATCH_SIZE = 100
-
-
-class NumericFeatures(TypedDict, total=False):
-    text_len: float
-    word_count: float
-    kindle_freq: float
-    sentiment: float
-    user_avg_len: float
-    user_review_count: float
-    item_avg_len: float
-    item_review_count: float
-    exclamation_count: float
-    caps_ratio: float
-    question_count: float
-    avg_word_length: float
-
 
 _artifacts_loaded = False
 
@@ -160,18 +144,10 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
 
     try:
         from fastapi.responses import JSONResponse as _JSONResponse
-        import traceback as _tb
-        from pathlib import Path as _P
 
         @application.exception_handler(Exception)
         async def _unhandled_exc_handler(request, exc):
-            try:
-                tb = _tb.format_exc()
-                _p = _P("artefacts/last_api_error_global.txt")
-                _p.parent.mkdir(parents=True, exist_ok=True)
-                _p.write_text(tb, encoding="utf-8")
-            except Exception:
-                pass
+            log.exception("Unhandled exception in API: %s", exc)
             return _JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
     except Exception:
         pass
@@ -293,34 +269,10 @@ def _register_routes(application: FastAPI) -> None:
                 method="POST", endpoint="/predict", error_type="bad_request"
             ).inc()
             raise HTTPException(status_code=400, detail=str(e)) from e
-        except (RuntimeError, FileNotFoundError, OSError) as e:
-            ERROR_COUNT.labels(
-                method="POST", endpoint="/predict", error_type="internal_error"
-            ).inc()
-            log.exception("Internal error in /predict: %s", e)
-            import traceback as _tb
-            tb = _tb.format_exc()
-            try:
-                from pathlib import Path as _P
-                _p = _P("artefacts/last_api_error_predict.txt")
-                _p.parent.mkdir(parents=True, exist_ok=True)
-                _p.write_text(tb, encoding="utf-8")
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}") from e
         except Exception as e:
             ERROR_COUNT.labels(method="POST", endpoint="/predict", error_type="internal_error").inc()
-            import traceback as _tb
-            tb = _tb.format_exc()
-            try:
-                from pathlib import Path as _P
-                _p = _P("artefacts/last_api_error_predict.txt")
-                _p.parent.mkdir(parents=True, exist_ok=True)
-                _p.write_text(tb, encoding="utf-8")
-            except Exception:
-                pass
-            log.exception("Unhandled error in /predict: %s", e)
-            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}") from e
+            log.exception("Error in /predict: %s", e)
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}") from e
 
     @application.post("/batch_predict")
     def batch_predict(request: Request, payload: dict[str, Any]):
@@ -362,10 +314,8 @@ def _register_routes(application: FastAPI) -> None:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             ERROR_COUNT.labels(method="POST", endpoint="/batch_predict", error_type="internal_error").inc()
-            log.exception("Internal error in /batch_predict: %s", e)
-            import traceback as _tb
-            tb = _tb.format_exc()
-            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}") from e
+            log.exception("Error in /batch_predict: %s", e)
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}") from e
 
     @application.get("/")
     def root():

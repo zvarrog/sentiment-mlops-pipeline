@@ -77,6 +77,7 @@ class PipelineBuilder(ABC):
                 ("num", numeric_pipeline, numeric_available),
             ],
             transformer_weights={"text": text_weight, "num": numeric_weight},
+            # sparse_threshold: порог разреженности для вывода sparse матрицы (0.3 = 30% ненулевых значений)
             sparse_threshold=0.3,
         )
 
@@ -122,6 +123,7 @@ class LogRegBuilder(PipelineBuilder):
             step=TFIDF_MAX_FEATURES_STEP,
         )
 
+        # LogisticRegression не использует SVD, поэтому создаем упрощенный препроцессор
         tfidf = TfidfVectorizer(
             max_features=text_max_features,
             ngram_range=(1, 2),
@@ -153,6 +155,7 @@ class LogRegBuilder(PipelineBuilder):
                 ("num", numeric_pipeline, numeric_available),
             ],
             transformer_weights={"text": text_weight, "num": numeric_weight},
+            # sparse_threshold: порог разреженности для вывода sparse матрицы (0.3 = 30% ненулевых значений)
             sparse_threshold=0.3,
         )
 

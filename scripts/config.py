@@ -22,7 +22,6 @@ DEFAULT_DRIFT_ARTEFACTS_SUBDIR = "drift_artefacts"
 
 DEFAULT_KAGGLE_DATASET = "bharadwaj6/kindle-reviews"
 DEFAULT_CSV_NAME = "kindle_reviews.csv"
-DEFAULT_JSON_NAME = "kindle_reviews.json"
 
 BEST_MODEL_FILENAME = "best_model.joblib"
 BEST_MODEL_META_FILENAME = "best_model_meta.json"
@@ -50,7 +49,7 @@ if not os.environ.get("AIRFLOW_HOME"):
 
 def _getenv_bool(key: str, default: bool = False) -> bool:
     val = os.environ.get(key, "").strip().lower()
-    if val in ("1", "true", "yes", "on"):
+    if val in ("1", "true", "yes"):
         return True
     if val in ("0", "false", "no", "off", ""):
         return default if val == "" else False
@@ -94,7 +93,6 @@ BASELINE_NUMERIC_STATS_PATH = MODEL_ARTEFACTS_DIR / BASELINE_NUMERIC_STATS_FILEN
 # Датасет
 KAGGLE_DATASET = os.environ.get("KAGGLE_DATASET", DEFAULT_KAGGLE_DATASET)
 CSV_NAME = os.environ.get("CSV_NAME", DEFAULT_CSV_NAME)
-JSON_NAME = os.environ.get("JSON_NAME", DEFAULT_JSON_NAME)
 
 # Флаги
 FORCE_DOWNLOAD = _getenv_bool("FORCE_DOWNLOAD", False)
@@ -176,7 +174,7 @@ LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
 LOG_INCLUDE_TIMESTAMP = _getenv_bool("LOG_INCLUDE_TIMESTAMP", True)
 
 
-@dataclass(frozen=True)
+@dataclass
 class DataPaths:
     train: Path = PROCESSED_DATA_DIR / "train.parquet"
     val: Path = PROCESSED_DATA_DIR / "val.parquet"
