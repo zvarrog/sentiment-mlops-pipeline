@@ -22,6 +22,7 @@ from sklearn.pipeline import Pipeline
 
 from scripts.config import (
     BEST_MODEL_PATH,
+    MLFLOW_EXPERIMENT_NAME,
     MLFLOW_TRACKING_URI,
     MODEL_ARTEFACTS_DIR,
     MODEL_DIR,
@@ -52,8 +53,6 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 logging.getLogger("mlflow").setLevel(logging.ERROR)
 logging.getLogger("optuna").setLevel(logging.ERROR)
 logging.getLogger("git").setLevel(logging.ERROR)
-
-EXPERIMENT_NAME: str = os.environ.get("MLFLOW_EXPERIMENT_NAME", "kindle_experiment")
 
 _model_sig = "_".join([m.value[:3] for m in sorted(SELECTED_MODEL_KINDS)])
 OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
@@ -160,7 +159,7 @@ def run(
     signal.signal(signal.SIGINT, signal_handler)
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_ARTEFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,7 +179,6 @@ def run(
         "Размеры: train=%d, val=%d, test=%d", len(x_train), len(x_val), len(x_test)
     )
 
-    mlflow.set_experiment(EXPERIMENT_NAME)
     start_time = time.time()
 
     with mlflow.start_run(run_name="classical_pipeline"):
@@ -331,18 +329,16 @@ def run(
         # Feature importances (для классических моделей)
         if best_model is not ModelKind.distilbert:
             try:
+                # Детектируем use_svd по финальному пайплайну
                 use_svd_flag = False
-                try:
-                    # Предпочитаем детектировать по финальному пайплайну
-                    pre: ColumnTransformer | None = final_pipeline.named_steps.get(
-                        "pre"
-                    )
-                    if pre is not None:
+                pre: ColumnTransformer | None = final_pipeline.named_steps.get("pre")
+                if pre is not None:
+                    try:
                         text_pipe: Pipeline = pre.named_transformers_["text"]
                         use_svd_flag = "svd" in getattr(text_pipe, "named_steps", {})
-                except (KeyError, AttributeError):
-                    # Фолбэк по best_params
-                    use_svd_flag = bool(best_params.get("use_svd", False))
+                    except (KeyError, AttributeError):
+                        # Фолбэк по best_params
+                        use_svd_flag = bool(best_params.get("use_svd", False))
 
                 fi_list = _extract_feature_importances(final_pipeline, use_svd_flag)
                 if fi_list:
@@ -384,10 +380,10 @@ def run(
 
         # Схема входа/выхода модели и реально использованные фичи
         try:
+            classes = sorted(set(y_full.tolist()))
             schema: dict[str, object] = {"input": {}, "output": {}}
             if best_model is ModelKind.distilbert:
                 schema["input"] = {"text_column": "reviewText"}
-                classes = sorted(set(y_full.tolist()))
                 schema["output"] = {"target_dtype": "int", "classes": classes}
             else:
                 pre: ColumnTransformer = final_pipeline.named_steps.get("pre")
@@ -419,7 +415,6 @@ def run(
                     "text": text_info,
                     "numeric_features": numeric_cols_used,
                 }
-                classes = sorted(set(y_full.tolist()))
                 schema["output"] = {"target_dtype": "int", "classes": classes}
 
             schema_path = MODEL_ARTEFACTS_DIR / "model_schema.json"
