@@ -6,14 +6,19 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pandas as pd
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+try:
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+except ImportError as e:
+    raise ImportError(
+        "Отсутствует зависимость tenacity. Добавьте её в requirements или уберите retry-логику."
+    ) from e
 
-from .config import CSV_NAME, FORCE_DOWNLOAD, KAGGLE_DATASET, RAW_DATA_DIR
+from .config import CSV_NAME, KAGGLE_DATASET, RAW_DATA_DIR
 from .logging_config import get_logger
 
 ZIP_FILENAME = RAW_DATA_DIR / "kindle-reviews.zip"
@@ -48,15 +53,15 @@ def _download_with_retry() -> None:
     log.info("Датасет успешно скачан")
 
 
-def main() -> Path:
-    """Скачивание датасета Kaggle.
+def main(force: bool = False) -> Path:
+    """Скачивание датасета Kaggle. Возвращает абсолютный путь к CSV."""
+    from .config import FORCE_DOWNLOAD
+    if force is False:
+        force = bool(FORCE_DOWNLOAD)
 
-    Returns:
-        Абсолютный путь к CSV
-    """
-    if CSV_PATH.exists() and not FORCE_DOWNLOAD:
+    if CSV_PATH.exists() and not force:
         log.warning(
-            "%s уже существует, пропуск скачивания. Для форсированного скачивания установите FORCE_DOWNLOAD=True",
+            "%s уже существует, пропуск скачивания. Для форсированного скачивания используйте force=True",
             CSV_NAME,
         )
         log.info("Абсолютный путь к CSV: %s", str(CSV_PATH.resolve()))

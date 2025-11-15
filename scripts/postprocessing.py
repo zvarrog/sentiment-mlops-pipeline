@@ -30,15 +30,6 @@ from scripts.logging_config import get_logger
 log = get_logger("postprocessing")
 
 
-def _save_baseline_numeric_stats(x_train: pd.DataFrame, out_dir: Path) -> Path:
-    from scripts.utils import atomic_write_json, get_baseline_stats
-
-    baseline_stats = get_baseline_stats(x_train)
-    out_path = Path(out_dir) / "baseline_numeric_stats.json"
-    atomic_write_json(out_path, baseline_stats)
-    return out_path
-
-
 def _save_confusion_and_report(y_true, y_pred, out_dir: Path) -> tuple[Path, Path]:
     from scripts.train_modules.evaluation import log_confusion_matrix
 
@@ -241,10 +232,12 @@ def generate_best_bundle(
     out_dir = Path(artefacts_dir or MODEL_ARTEFACTS_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) baseline
-    _save_baseline_numeric_stats(x_train, out_dir)
+    from scripts.utils import atomic_write_json, get_baseline_stats
 
-    # 2) загрузка модели и предсказания
+    baseline_stats = get_baseline_stats(x_train)
+    baseline_path = out_dir / "baseline_numeric_stats.json"
+    atomic_write_json(baseline_path, baseline_stats)
+
     pipeline = joblib.load(pipeline_path)
     try:
         x_for_test = (
@@ -256,7 +249,6 @@ def generate_best_bundle(
     except (ValueError, TypeError, AttributeError, RuntimeError):
         test_preds = None
 
-    # 3) отчеты по тесту
     test_metrics: dict[str, Any] = {}
     if test_preds is not None:
         from scripts.train_modules.evaluation import compute_metrics

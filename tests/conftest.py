@@ -97,13 +97,11 @@ def sample_parquet_files_small(tmp_path_factory) -> Iterator[Path]:
         processed_dir / "test.parquet", index=False
     )
 
-    # Обновляем переменные окружения для загрузчика данных
     old_processed_dir = os.environ.get("PROCESSED_DATA_DIR")
     os.environ["PROCESSED_DATA_DIR"] = str(processed_dir)
 
     yield processed_dir
 
-    # Восстанавливаем переменную окружения
     if old_processed_dir:
         os.environ["PROCESSED_DATA_DIR"] = old_processed_dir
 
@@ -134,16 +132,18 @@ def mock_mlflow(monkeypatch):
 
     # Мокаем sklearn.log_model и pyfunc.log_model
     try:
-        import mlflow.sklearn
+        import importlib
 
-        monkeypatch.setattr(mlflow.sklearn, "log_model", lambda *a, **k: None)
+        mlflow_sklearn = importlib.import_module("mlflow.sklearn")
+        monkeypatch.setattr(mlflow_sklearn, "log_model", lambda *a, **k: None)
     except (ImportError, AttributeError):
         pass
 
     try:
-        import mlflow.pyfunc
+        import importlib
 
-        monkeypatch.setattr(mlflow.pyfunc, "log_model", lambda *a, **k: None)
+        mlflow_pyfunc = importlib.import_module("mlflow.pyfunc")
+        monkeypatch.setattr(mlflow_pyfunc, "log_model", lambda *a, **k: None)
     except (ImportError, AttributeError):
         pass
 

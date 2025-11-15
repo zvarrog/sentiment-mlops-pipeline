@@ -8,15 +8,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
 from scripts.config import (
     DRIFT_ARTEFACTS_DIR,
     MIN_SAMPLES_FOR_PSI,
     MODEL_ARTEFACTS_DIR,
+    NUMERIC_COLS,
     PROCESSED_DATA_DIR,
 )
-from scripts.constants import NUMERIC_COLS
 from scripts.logging_config import get_logger
 
 log = get_logger("drift_monitor")
@@ -56,33 +55,11 @@ def psi(
     return float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct)))
 
 
-def send_slack_alert(message: str, webhook_url: str | None = None):
-    """Отправляет алерт в Slack при обнаружении дрейфа."""
-    webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
-    if not webhook_url:
-        log.warning("SLACK_WEBHOOK_URL не установлен, алерт не отправлен")
-        return
-
-    msg = message.replace("@", "＠").replace("#", "＃")
-    payload = {
-        "text": f"[DRIFT ALERT]\n{msg}",
-        "username": "Drift Monitor",
-    }
-
-    try:
-        response = requests.post(webhook_url, json=payload, timeout=5)
-        response.raise_for_status()
-        log.info("Slack alert sent successfully")
-    except requests.RequestException as e:
-        log.error("Failed to send Slack alert: %s", e)
-
-
 def run_drift_monitor(
     new_path: str | Path,
     threshold: float = 0.2,
     save: bool = True,
     out_dir: str | Path | None = None,
-    alert_on_drift: bool = True,
 ) -> list[dict]:
     """Запускает расчёт PSI по числовым признакам.
 
@@ -91,7 +68,6 @@ def run_drift_monitor(
         threshold: Порог PSI для флага дрейфа
         save: Сохранить отчёт в drift/drift_report.json
         out_dir: Директория для сохранения (по умолчанию DRIFT_ARTEFACTS_DIR)
-        alert_on_drift: Отправить алерт в Slack при дрейфе
 
     Returns:
         Список словарей: {feature, psi, drift}
@@ -126,15 +102,13 @@ def run_drift_monitor(
 
     report: list[dict] = []
     for col in NUMERIC_COLS:
-        if col not in new_df.columns or col not in base_stats or col in ignore_cols:
+        if col in ignore_cols:
+            continue
+        if col not in base_stats:
+            continue
+        if col not in new_df.columns or col not in train_df.columns:
             continue
         actual = _safe_values(new_df[col])
-
-        if col not in train_df.columns:
-            raise KeyError(
-                f"Колонка '{col}' отсутствует в train.parquet — дрейф-мониторинг невозможен"
-            )
-
         expected = _safe_values(train_df[col])
         q = np.linspace(0, 1, 11)
         cuts = np.unique(np.quantile(expected[~np.isnan(expected)], q))
@@ -193,12 +167,5 @@ def run_drift_monitor(
                 plt.close()
         except (OSError, ValueError, ImportError) as e:
             log.warning("Не удалось построить гистограммы: %s", e)
-
-    # Отправляем Slack алерт при обнаружении дрейфа
-    drifted = [r for r in report if r.get("drift")]
-    if drifted and alert_on_drift:
-        features = ", ".join(r.get("feature", "?") for r in drifted)
-        message = f"Обнаружен дрейф по {len(drifted)} признакам: {features}"
-        send_slack_alert(message)
 
     return report

@@ -1,26 +1,14 @@
 """Общая логика работы с моделями и MLflow Registry."""
 
 import json
-import os
 from pathlib import Path
 
-from scripts.config import MODEL_PRODUCTION_THRESHOLD
-from scripts.constants import DEFAULT_MODEL_ARTEFACTS_SUBDIR, DEFAULT_MODEL_DIR
+from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_PRODUCTION_THRESHOLD
 from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
 
 log = get_logger(__name__)
 
-# Ленивое вычисление пути к артефактам
-MODEL_ARTEFACTS_DIR = Path(
-    os.getenv(
-        "MODEL_ARTEFACTS_DIR",
-        str(
-            Path(os.getenv("MODEL_DIR", DEFAULT_MODEL_DIR))
-            / DEFAULT_MODEL_ARTEFACTS_SUBDIR
-        ),
-    )
-)
 
 
 def load_old_model_metric() -> float | None:

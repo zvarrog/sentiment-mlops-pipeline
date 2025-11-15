@@ -14,11 +14,11 @@ from scripts.config import (
     DISTILBERT_TIMEOUT_SEC,
     MIN_TRIALS_BEFORE_EARLY_STOP,
     N_FOLDS,
+    NUMERIC_COLS,
     OPTUNA_N_TRIALS,
     OPTUNA_TIMEOUT_SEC,
     SEED,
 )
-from scripts.constants import NUMERIC_COLS
 from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
 from scripts.train_modules.evaluation import compute_metrics
@@ -183,7 +183,7 @@ def optimize_model(
     timeout = DISTILBERT_TIMEOUT_SEC if is_distilbert else OPTUNA_TIMEOUT_SEC
 
     log.info(
-        "Оптимизация %s: trials=%d, timeout=%ds",
+        "Оптимизация %s: n_trials=%d, timeout=%ds",
         model_kind.value,
         OPTUNA_N_TRIALS,
         timeout,
@@ -206,10 +206,11 @@ def optimize_model(
         log.warning("Оптимизация прервана пользователем")
 
     log.info(
-        "Оптимизация %s завершена: %d trials, лучший f1_macro=%.4f",
+        "Оптимизация %s завершена: всего trials=%d, лучший f1_macro=%.4f, параметры=%s",
         model_kind.value,
         len(study.trials),
         study.best_value,
+        {k: v for k, v in study.best_params.items() if not k.startswith("_")},
     )
 
     return study

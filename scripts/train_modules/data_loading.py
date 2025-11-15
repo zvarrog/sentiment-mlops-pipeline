@@ -4,9 +4,7 @@ import logging
 
 import pandas as pd
 
-from scripts.config import DATA_PATHS, SEED
-
-from .feature_space import NUMERIC_COLS
+from scripts.config import DATA_PATHS, NUMERIC_COLS, SEED
 
 log = logging.getLogger("data_loading")
 

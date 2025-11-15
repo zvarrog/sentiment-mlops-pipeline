@@ -1,202 +1,202 @@
 [
   {
     "feature": "sentiment",
-    "importance": 0.05278926988456855
+    "importance": 0.05025999633322023
   },
   {
-    "feature": "great",
-    "importance": 0.016054241809113006
+    "feature": "svd_5[seri,love,read...]",
+    "importance": 0.026832920474221117
+  },
+  {
+    "feature": "svd_3[didn,stori,like...]",
+    "importance": 0.02131648620693046
+  },
+  {
+    "feature": "svd_7[end,charact,good...]",
+    "importance": 0.02123276171600716
+  },
+  {
+    "feature": "svd_1[enjoy,read,seri...]",
+    "importance": 0.019006782285054053
+  },
+  {
+    "feature": "svd_12[sex,great,heroin...]",
+    "importance": 0.01467373182557223
+  },
+  {
+    "feature": "svd_11[enjoy,short,did...]",
+    "importance": 0.013875374376724807
+  },
+  {
+    "feature": "svd_97[averi,car,right...]",
+    "importance": 0.012745785696854755
+  },
+  {
+    "feature": "svd_54[plot,pretti,life...]",
+    "importance": 0.012606386718618159
+  },
+  {
+    "feature": "svd_14[short,love,recip...]",
+    "importance": 0.012016912400594644
+  },
+  {
+    "feature": "svd_21[develop,page,keep...]",
+    "importance": 0.011416985494427472
+  },
+  {
+    "feature": "svd_82[time,action,review...]",
+    "importance": 0.011369926088276945
+  },
+  {
+    "feature": "svd_35[sex,great,fun...]",
+    "importance": 0.011351865099851153
+  },
+  {
+    "feature": "svd_8[good,read,expect...]",
+    "importance": 0.010795883211303592
+  },
+  {
+    "feature": "svd_0[book,stori,read...]",
+    "importance": 0.010680136661644175
+  },
+  {
+    "feature": "svd_43[plot,expect,make...]",
+    "importance": 0.010675453112402757
+  },
+  {
+    "feature": "svd_46[need,worth,start...]",
+    "importance": 0.010540839379132179
+  },
+  {
+    "feature": "svd_63[fun,way,develop...]",
+    "importance": 0.010254255727708123
+  },
+  {
+    "feature": "svd_95[joke,real,miss...]",
+    "importance": 0.010077298909692669
+  },
+  {
+    "feature": "svd_94[definit,hope,move...]",
+    "importance": 0.009913828753199344
+  },
+  {
+    "feature": "svd_84[excit,feel,girl...]",
+    "importance": 0.009892004853834402
   },
   {
     "feature": "avg_word_length",
-    "importance": 0.015012127987020087
+    "importance": 0.009878936406923729
   },
   {
-    "feature": "book",
-    "importance": 0.013092244482036282
+    "feature": "svd_67[say,sexi,children...]",
+    "importance": 0.009874388491131598
   },
   {
-    "feature": "caps_ratio",
-    "importance": 0.013070611594132862
+    "feature": "svd_2[stori,book,short...]",
+    "importance": 0.009716135191034697
   },
   {
-    "feature": "loved",
-    "importance": 0.012658234284473935
+    "feature": "svd_41[talk,develop,heroin...]",
+    "importance": 0.009707188853471264
   },
   {
-    "feature": "ok",
-    "importance": 0.011277047170763643
+    "feature": "svd_6[just,book,written...]",
+    "importance": 0.009653023518717772
   },
   {
-    "feature": "series",
-    "importance": 0.010391596513755626
+    "feature": "svd_4[short,didn,read...]",
+    "importance": 0.00960927157152964
   },
   {
-    "feature": "exclamation_count",
-    "importance": 0.010379110270179204
+    "feature": "svd_64[feel,peopl,hard...]",
+    "importance": 0.009479831448665143
   },
   {
-    "feature": "good",
-    "importance": 0.009943309431795423
+    "feature": "svd_18[don,heroin,recip...]",
+    "importance": 0.009417422960665023
   },
   {
-    "feature": "read",
-    "importance": 0.009699449794955425
+    "feature": "svd_83[line,mysteri,place...]",
+    "importance": 0.009347657372048498
   },
   {
-    "feature": "just",
-    "importance": 0.009115109622785967
+    "feature": "svd_57[men,line,live...]",
+    "importance": 0.009152066174433749
   },
   {
-    "feature": "sorry",
-    "importance": 0.009093644761146179
+    "feature": "svd_71[hard,plant,finish...]",
+    "importance": 0.009119402603000678
   },
   {
-    "feature": "didn",
-    "importance": 0.009079487036001362
+    "feature": "svd_20[recip,written,like...]",
+    "importance": 0.00908082202189001
   },
   {
-    "feature": "waste",
-    "importance": 0.008824671248736714
+    "feature": "svd_58[car,bit,peopl...]",
+    "importance": 0.009046265343539821
+  },
+  {
+    "feature": "svd_81[henri,mean,plant...]",
+    "importance": 0.009014497014888191
+  },
+  {
+    "feature": "svd_27[bad,better,plot...]",
+    "importance": 0.008957323891478387
+  },
+  {
+    "feature": "svd_62[cover,know,mail...]",
+    "importance": 0.008874139986261857
+  },
+  {
+    "feature": "svd_61[children,hope,fiction...]",
+    "importance": 0.008800807098288056
+  },
+  {
+    "feature": "svd_72[get,car,children...]",
+    "importance": 0.008790514022918324
+  },
+  {
+    "feature": "svd_10[written,author,end...]",
+    "importance": 0.00877842685931151
+  },
+  {
+    "feature": "svd_90[wish,learn,right...]",
+    "importance": 0.00876396699128278
+  },
+  {
+    "feature": "svd_26[page,sex,did...]",
+    "importance": 0.008758454282457733
+  },
+  {
+    "feature": "svd_68[happen,car,review...]",
+    "importance": 0.00874866361608854
+  },
+  {
+    "feature": "svd_47[write,time,thought...]",
+    "importance": 0.00871928561796917
+  },
+  {
+    "feature": "svd_33[great,expect,tri...]",
+    "importance": 0.008714181434230141
+  },
+  {
+    "feature": "svd_29[expect,cover,line...]",
+    "importance": 0.00868573204461767
+  },
+  {
+    "feature": "svd_30[did,kindl,need...]",
+    "importance": 0.008676125302069489
+  },
+  {
+    "feature": "svd_9[realli,like,short...]",
+    "importance": 0.00866915034130629
   },
   {
     "feature": "text_len",
-    "importance": 0.008577829925194538
+    "importance": 0.008635881811443789
   },
   {
-    "feature": "finish",
-    "importance": 0.00851515208809573
-  },
-  {
-    "feature": "item_avg_len",
-    "importance": 0.007654563609413377
-  },
-  {
-    "feature": "user_avg_len",
-    "importance": 0.007560571388549244
-  },
-  {
-    "feature": "wait",
-    "importance": 0.006436688446741272
-  },
-  {
-    "feature": "word_count",
-    "importance": 0.006120319710798
-  },
-  {
-    "feature": "highly recommend",
-    "importance": 0.0060470076617376075
-  },
-  {
-    "feature": "liked",
-    "importance": 0.005909893107014286
-  },
-  {
-    "feature": "short",
-    "importance": 0.005898417271296394
-  },
-  {
-    "feature": "enjoyed",
-    "importance": 0.005864712459099208
-  },
-  {
-    "feature": "love",
-    "importance": 0.005796347450921312
-  },
-  {
-    "feature": "overall",
-    "importance": 0.005401968125866902
-  },
-  {
-    "feature": "books",
-    "importance": 0.005361170947718226
-  },
-  {
-    "feature": "money",
-    "importance": 0.005135284544401414
-  },
-  {
-    "feature": "time",
-    "importance": 0.005074190511230482
-  },
-  {
-    "feature": "review",
-    "importance": 0.00505493741731415
-  },
-  {
-    "feature": "like",
-    "importance": 0.0049953629979683604
-  },
-  {
-    "feature": "does",
-    "importance": 0.004680261175568687
-  },
-  {
-    "feature": "story",
-    "importance": 0.004632080587681965
-  },
-  {
-    "feature": "sex",
-    "importance": 0.0045426492421206995
-  },
-  {
-    "feature": "highly",
-    "importance": 0.004395953537226998
-  },
-  {
-    "feature": "little",
-    "importance": 0.0037435046540585156
-  },
-  {
-    "feature": "free",
-    "importance": 0.0037358081508679654
-  },
-  {
-    "feature": "make",
-    "importance": 0.0037070484439490695
-  },
-  {
-    "feature": "ok read",
-    "importance": 0.00366125385832774
-  },
-  {
-    "feature": "honest review",
-    "importance": 0.003573631366919415
-  },
-  {
-    "feature": "characters",
-    "importance": 0.0034941781170954784
-  },
-  {
-    "feature": "reading",
-    "importance": 0.003426856590913296
-  },
-  {
-    "feature": "rushed",
-    "importance": 0.003391438418419269
-  },
-  {
-    "feature": "nice",
-    "importance": 0.003279330126541115
-  },
-  {
-    "feature": "sweet",
-    "importance": 0.0032693339475275804
-  },
-  {
-    "feature": "ending",
-    "importance": 0.003251643758037676
-  },
-  {
-    "feature": "bad",
-    "importance": 0.003205656889990437
-  },
-  {
-    "feature": "best",
-    "importance": 0.0032051239330243906
-  },
-  {
-    "feature": "start",
-    "importance": 0.003061819755750637
+    "feature": "svd_48[cover,start,mail...]",
+    "importance": 0.008542978623137238
   }
 ]

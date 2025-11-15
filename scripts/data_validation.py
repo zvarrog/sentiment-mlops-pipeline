@@ -71,9 +71,9 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
     column_types={
         "reviewText": "object",
         "overall": ["int64", "int32"],
-        "text_len": ["float64", "int32", "int64"],
-        "word_count": ["float64", "int32", "int64"],
-        "kindle_freq": ["float64", "int32"],
+        "text_len": ["float32"],
+        "word_count": ["float32"],
+        "kindle_freq": ["float32"],
         "sentiment_score": ["float64", "int32"],
         "has_punctuation": ["float64", "int32"],
         "avg_word_length": ["float64", "int32"],

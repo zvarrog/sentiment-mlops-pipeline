@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import optuna
+from scipy import sparse as sp
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
@@ -11,15 +12,18 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
-from scripts.config import SEED, TRAIN_DEVICE
-from scripts.constants import NUMERIC_COLS
+from scripts.config import NUMERIC_COLS, SEED, TRAIN_DEVICE
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
-from scripts.train_modules.feature_space import DenseTransformer
 from scripts.train_modules.models import SimpleMLP
 from scripts.train_modules.text_analyzers import make_tfidf_analyzer
+
+
+def _to_dense(x):
+    """Преобразует sparse матрицу в dense."""
+    return x.toarray() if sp.issparse(x) else x
 
 
 class PipelineBuilder(ABC):
@@ -170,7 +174,7 @@ class LogRegBuilder(PipelineBuilder):
         penalty = "l2" if solver == "lbfgs" else pen_others
 
         if solver == "lbfgs":
-            steps.append(("to_dense", DenseTransformer()))
+            steps.append(("to_dense", FunctionTransformer(_to_dense)))
 
         clf = LogisticRegression(
             max_iter=2500,
@@ -241,7 +245,7 @@ class MLPBuilder(PipelineBuilder):
         epochs = self.trial.suggest_int("mlp_epochs", 3, 8)
         lr = self.trial.suggest_float("mlp_lr", 1e-4, 5e-3, log=True)
 
-        steps.append(("to_dense", DenseTransformer()))
+        steps.append(("to_dense", FunctionTransformer(_to_dense)))
         clf = SimpleMLP(hidden_dim=hidden, epochs=epochs, lr=lr, device=TRAIN_DEVICE)
         steps.append(("model", clf))
         return Pipeline(steps)
@@ -278,7 +282,7 @@ class HistGBBuilder(PipelineBuilder):
             min_samples_leaf=min_leaf,
             random_state=SEED,
         )
-        steps.append(("to_dense", DenseTransformer()))
+        steps.append(("to_dense", FunctionTransformer(_to_dense)))
         steps.append(("model", clf))
         return Pipeline(steps)
 

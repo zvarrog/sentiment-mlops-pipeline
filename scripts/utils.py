@@ -8,7 +8,7 @@ import pandas as pd
 
 
 def get_baseline_stats(x_train: pd.DataFrame) -> dict[str, dict[str, float]]:
-    from scripts.constants import NUMERIC_COLS
+    from scripts.config import NUMERIC_COLS
 
     baseline_stats: dict[str, dict[str, float]] = {}
     for col in NUMERIC_COLS:
@@ -58,3 +58,23 @@ def get_flag(context: dict, name: str, default: bool = False) -> bool:
     if dag and name in getattr(dag, "params", {}):
         return to_bool(dag.params.get(name), default)
     return bool(default)
+
+
+def atomic_write_json(path, data: dict, **kwargs):
+    """Атомарная запись JSON-файла через временный файл."""
+    import json
+    import os
+    from pathlib import Path
+
+    path = Path(path)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=kwargs.get("indent", 2))
+        # Атомарное переименование (на POSIX это атомарно)
+        os.replace(temp_path, path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise

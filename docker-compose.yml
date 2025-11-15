@@ -69,7 +69,7 @@ services:
       - ./artefacts:/opt/airflow/artefacts
       - airflow_logs:/opt/airflow/logs
       - ${KAGGLE_JSON:-./kaggle.json}:/home/airflow/.kaggle/kaggle.json:ro
-    # Для запуска на GPU, раскомментируйте строку ниже (требуются драйверы/Nvidia Container Toolkit):
+    # Опция GPU доступна (см. README по установке Nvidia Container Toolkit):
     # gpus: all
     ports:
       - '8080:8080'

@@ -1,11 +1,13 @@
-"""Feature contract для валидации входных данных и признаков модели."""
+"""Контракт признаков: загрузка артефактов и валидация без широких except."""
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import pandas as pd
 
 REQUIRED_TEXT_COL = "reviewText"
+OUTLIER_SIGMAS = 3  # число сигм для детекции выбросов
 
 
 @dataclass
@@ -21,95 +23,80 @@ class FeatureContract:
 
     @classmethod
     def from_model_artifacts(cls, model_artefact_dir: Path) -> "FeatureContract":
-        """Создаёт контракт из baseline_numeric_stats.json или model_schema.json."""
+        """Строит контракт на основе baseline_numeric_stats.json и/или model_schema.json."""
         baseline_path = model_artefact_dir / "baseline_numeric_stats.json"
         schema_path = model_artefact_dir / "model_schema.json"
-        baseline_stats = None
+        baseline_stats: dict[str, dict[str, float]] | None = None
         expected_numeric: list[str] = []
 
-        # Загружаем baseline
         if baseline_path.exists():
             try:
-                with open(baseline_path, encoding="utf-8") as f:
-                    baseline_stats = json.load(f)
-            except Exception:
+                baseline_stats = json.loads(baseline_path.read_text(encoding="utf-8"))
+                if isinstance(baseline_stats, dict) and baseline_stats:
+                    expected_numeric = [str(k) for k in baseline_stats]
+            except (OSError, json.JSONDecodeError):
                 baseline_stats = None
-            # Ориентируемся на ключи baseline (реально использованные признаки)
-            if isinstance(baseline_stats, dict) and baseline_stats:
-                expected_numeric = [str(k) for k in baseline_stats]
 
-        # Фактически использованные числовые признаки из схемы
         if schema_path.exists():
             try:
-                with open(schema_path, encoding="utf-8") as f:
-                    schema = json.load(f)
-                inp = schema.get("input", {})
-                # Классические модели сохраняют список под ключом numeric_features
-                used = inp.get("numeric_features")
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                inp = schema.get("input", {}) if isinstance(schema, dict) else {}
+                used = inp.get("numeric_features") if isinstance(inp, dict) else None
                 if isinstance(used, list) and used:
                     expected_numeric = [str(x) for x in used]
-            except Exception:
+            except (OSError, json.JSONDecodeError):
                 pass
 
-        # Валидация: список признаков обязателен
         if not expected_numeric:
             raise RuntimeError(
-                f"Не удалось определить список числовых признаков из артефактов в {model_artefact_dir}. "
-                f"Проверьте наличие {baseline_path.name} или {schema_path.name}"
+                "Отсутствует список числовых признаков. Нужен хотя бы один из файлов: "
+                f"{baseline_path.name} или {schema_path.name}"
             )
 
-        return cls(
-            required_text_columns=[REQUIRED_TEXT_COL],
-            expected_numeric_columns=expected_numeric,
-            baseline_stats=baseline_stats,
-        )
+        return cls([REQUIRED_TEXT_COL], expected_numeric, baseline_stats)
 
-    def validate_input_data(self, data: dict[str, Any]) -> dict[str, list[str]]:
-        """Валидирует входные данные и возвращает предупреждения."""
-        warnings = {}
+    def validate_input_data(self, data: dict[str, Any] | pd.DataFrame) -> dict[str, list[str]]:
+        """Возвращает словарь предупреждений по входным данным."""
+        if isinstance(data, pd.DataFrame):
+            data = {c: data[c].tolist() for c in data.columns}
 
-        # Проверка обязательных текстовых колонок
-        missing_text = []
-        for col in self.required_text_columns:
-            if col not in data:
-                missing_text.append(col)
+        issues: dict[str, list[str]] = {}
+
+        missing_text = [c for c in self.required_text_columns if c not in data]
         if missing_text:
-            warnings["missing_required_columns"] = missing_text
+            issues["missing_required_columns"] = missing_text
 
-        # Проверка числовых колонок
-        missing_numeric = []
-        outlier_warnings = []
+        missing_numeric: list[str] = []
+        invalid_types: list[str] = []
+        outliers: list[str] = []
 
         for col in self.expected_numeric_columns:
             if col not in data:
                 missing_numeric.append(col)
-            elif self.baseline_stats and col in self.baseline_stats:
-                # Выбросы (3 сигмы)
+                continue
+            raw = data[col]
+            values = raw if isinstance(raw, (list, tuple)) else [raw]
+            for i, v in enumerate(values):
+                if not isinstance(v, (int, float)):
+                    invalid_types.append(f"{col}[{i}] -> {type(v).__name__}")
+            if self.baseline_stats and col in self.baseline_stats:
                 baseline = self.baseline_stats[col]
                 mean = baseline.get("mean", 0.0)
                 std = baseline.get("std", 1.0)
-
-                if isinstance(data[col], (list, tuple)):
-                    values = data[col]
-                else:
-                    values = [data[col]]
-
-                for i, val in enumerate(values):
-                    if (
-                        isinstance(val, (int, float))
-                        and std > 0
-                        and abs(val - mean) > 3 * std
-                    ):
-                        outlier_warnings.append(
-                            f"{col}[{i}]: {val} (expected ~{mean:.2f}±{3 * std:.2f})"
-                        )
+                if std > 0:
+                    for i, v in enumerate(values):
+                        if isinstance(v, (int, float)) and abs(v - mean) > OUTLIER_SIGMAS * std:
+                            outliers.append(
+                                f"{col}[{i}]: {v} (≈{mean:.2f}±{OUTLIER_SIGMAS * std:.2f})"
+                            )
 
         if missing_numeric:
-            warnings["missing_numeric_columns"] = missing_numeric
-        if outlier_warnings:
-            warnings["potential_outliers"] = outlier_warnings
-
-        return warnings
+            issues["missing_numeric_columns"] = missing_numeric
+        if invalid_types:
+            issues["invalid_types"] = invalid_types
+        if outliers:
+            issues["potential_outliers"] = outliers
+        return issues
 
     def get_feature_info(self) -> dict[str, Any]:
         """Возвращает информацию о контракте признаков."""

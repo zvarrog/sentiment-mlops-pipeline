@@ -73,9 +73,12 @@ def _task_download(**context):
     from scripts.logging_config import setup_auto_logging
 
     log = setup_auto_logging()
-    log.info("Загрузка данных из Kaggle")
 
-    csv_abs = download_main()
+    force_download = get_flag(context, "force_download", False)
+
+    log.info("Загрузка данных из Kaggle (force_download=%s)", force_download)
+
+    csv_abs = download_main(force=force_download)
     log.info("Данные загружены: %s", csv_abs)
     return str(csv_abs)
 
@@ -118,16 +121,23 @@ def _task_inject_drift(**context):
 
 
 def _task_process(**context):
+    from scripts.config import DATA_PATHS
     from scripts.logging_config import setup_auto_logging
-    from scripts.spark_process import TEST_PATH, TRAIN_PATH, VAL_PATH, process_data
+    from scripts.spark_process import process_data
 
     log = setup_auto_logging()
-    log.info("Обработка данных через Spark")
 
-    # Явно запускаем обработку
-    process_data()
+    force_process = get_flag(context, "force_process", False)
 
-    return {"train": str(TRAIN_PATH), "val": str(VAL_PATH), "test": str(TEST_PATH)}
+    log.info("Обработка данных через Spark (force_process=%s)", force_process)
+
+    process_data(force=force_process)
+
+    return {
+        "train": str(DATA_PATHS.train),
+        "val": str(DATA_PATHS.val),
+        "test": str(DATA_PATHS.test),
+    }
 
 
 def _task_drift_monitor(**context):
@@ -184,9 +194,12 @@ def _task_train_standard(**context):
     from scripts.train import run
 
     log = setup_auto_logging()
-    log.info("Обучение модели (standard режим)")
 
-    run()
+    force_train = get_flag(context, "force_train", False)
+
+    log.info("Обучение модели (standard режим, force_train=%s)", force_train)
+
+    run(force=force_train)
 
     log.info("Обучение завершено")
     return "training_complete"
@@ -248,56 +261,26 @@ def _log_model_metrics_to_db(**context):
 
 def _train_model_parallel(model_kind: str, **context):
     """Обучение одной модели через прямой вызов run()."""
-    import os
-    from pathlib import Path
-
-    from scripts.config import MODEL_ARTEFACTS_DIR
     from scripts.logging_config import setup_auto_logging
+    from scripts.models.kinds import ModelKind
 
     log = setup_auto_logging()
     log.info(f"Обучение модели: {model_kind}")
 
-    # Переопределяем через переменные окружения для изоляции
-    old_model_kinds = os.environ.get("SELECTED_MODEL_KINDS")
-    old_force_train = os.environ.get("FORCE_TRAIN")
+    force_train = get_flag(context, "force_train", False)
 
-    try:
-        os.environ["SELECTED_MODEL_KINDS"] = model_kind
-        os.environ["FORCE_TRAIN"] = "1"
+    from scripts.train import run
 
-        from scripts.train import run
+    run(
+        force=force_train,
+        selected_models=[ModelKind(model_kind)],
+    )
 
-        run()
-        log.info(f"Модель {model_kind} успешно обучена")
-    finally:
-        # Восстанавливаем старые значения
-        if old_model_kinds is not None:
-            os.environ["SELECTED_MODEL_KINDS"] = old_model_kinds
-        else:
-            os.environ.pop("SELECTED_MODEL_KINDS", None)
-
-        if old_force_train is not None:
-            os.environ["FORCE_TRAIN"] = old_force_train
-        else:
-            os.environ.pop("FORCE_TRAIN", None)
-
-    import json
-
-    meta_path = Path(MODEL_ARTEFACTS_DIR) / f"meta_{model_kind}.json"
-    model_path = Path(MODEL_ARTEFACTS_DIR) / f"model_{model_kind}.joblib"
-
-    if not meta_path.exists():
-        raise FileNotFoundError(f"Метаданные модели не найдены: {meta_path}")
-
-    with open(meta_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    log.info(f"Модель {model_kind} успешно обучена")
 
     return {
         "model": model_kind,
-        "val_f1_macro": meta.get("val_f1_macro", 0.0),
-        "test_f1_macro": meta.get("test_f1_macro", 0.0),
-        "meta_path": str(meta_path),
-        "model_path": str(model_path),
+        "status": "completed",
     }
 
 
@@ -309,136 +292,17 @@ def train_one(model_kind: str, **context):
 
 @task
 def select_best(results: list[dict], **context):
-    """Выбирает лучшую модель из результатов динамически обученных моделей."""
-    import contextlib
-    import json
-    import shutil
-    from datetime import datetime
-    from pathlib import Path
-
-    from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_FILE_DIR
+    """Фиксирует факт завершения параллельного обучения."""
     from scripts.logging_config import setup_auto_logging
 
     log = setup_auto_logging()
-    log.info("Выбор лучшей модели из обученных")
+    log.info("Параллельное обучение завершено")
 
     if not results:
         raise ValueError("Ни одна модель не была успешно обучена")
 
-    best = max(results, key=lambda x: x.get("val_f1_macro", 0.0))
-    log.info(
-        f"Лучшая модель: {best['model']} с val_f1_macro={best['val_f1_macro']:.4f}"
-    )
-
-    MODEL_FILE_DIR.mkdir(parents=True, exist_ok=True)
-    best_model_path = MODEL_FILE_DIR / "best_model.joblib"
-
-    from scripts.model_registry import load_old_model_metric, should_replace_model
-
-    old_model_metric = load_old_model_metric()
-    new_model_metric = best["val_f1_macro"]
-
-    if not should_replace_model(new_model_metric, old_model_metric, best["model"]):
-        return {
-            "status": "skipped",
-            "reason": "new_model_not_better",
-            "old_metric": old_model_metric,
-            "new_metric": new_model_metric,
-        }
-
-    src_model = Path(best["model_path"]) if best.get("model_path") else None
-    if src_model and src_model.exists():
-        try:
-            shutil.copy2(src_model, best_model_path)
-        except PermissionError:
-            shutil.copyfile(src_model, best_model_path)
-        except OSError as e:
-            log.warning(f"copy2 не удался: {e}; пробую copyfile")
-            shutil.copyfile(src_model, best_model_path)
-        log.info(f"Лучшая модель скопирована в {best_model_path}")
-
-    try:
-        from scripts.postprocessing import generate_best_bundle
-        from scripts.train_modules.data_loading import load_splits
-
-        x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
-
-        src_meta = Path(best.get("meta_path", ""))
-        best_params = {}
-        if src_meta and src_meta.exists():
-            with open(src_meta, encoding="utf-8") as f:
-                _meta_raw = json.load(f)
-                best_params = _meta_raw.get("best_params", {})
-
-        generate_best_bundle(
-            best_model=str(best["model"]),
-            best_params=best_params,
-            best_val_f1_macro=float(best.get("val_f1_macro", 0.0)),
-            pipeline_path=best_model_path,
-            x_train=x_train,
-            x_val=x_val,
-            x_test=x_test,
-            y_train=y_train,
-            y_val=y_val,
-            y_test=y_test,
-            artefacts_dir=Path(MODEL_ARTEFACTS_DIR),
-        )
-    except Exception as e:
-        log.warning(f"Постпроцессинг лучшей модели частично пропущен: {e}")
-
-    try:
-        import mlflow
-
-        from scripts.config import MLFLOW_TRACKING_URI
-        from scripts.model_registry import register_model_in_mlflow
-        from scripts.models.kinds import ModelKind
-
-        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
-        best_kind = ModelKind(best["model"])
-        test_f1 = best.get("test_f1_macro", 0.0)
-
-        register_model_in_mlflow(
-            best_model_path, best_kind, test_f1, mlflow_run_active=False
-        )
-    except Exception as e:
-        log.warning("Не удалось зарегистрировать модель в MLflow Registry: %s", e)
-
-    try:
-        keep = get_flag(context, "keep_candidates", False)
-        arte_dir = Path(MODEL_ARTEFACTS_DIR)
-        best_kind = str(best["model"]).strip()
-        model_files = list(arte_dir.glob("model_*.joblib"))
-        meta_files = list(arte_dir.glob("meta_*.json"))
-        to_affect = []
-        for p in model_files + meta_files:
-            name = p.name
-            if name.startswith("model_") and name != f"model_{best_kind}.joblib":
-                to_affect.append(p)
-            if name.startswith("meta_") and name != f"meta_{best_kind}.json":
-                to_affect.append(p)
-
-        if to_affect:
-            if keep:
-                dst_root = (
-                    arte_dir
-                    / "candidates"
-                    / datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                )
-                dst_root.mkdir(parents=True, exist_ok=True)
-                for p in to_affect:
-                    shutil.move(str(p), str(dst_root / p.name))
-                log.info(f"Кандидаты перемещены в {dst_root}")
-            else:
-                for p in to_affect:
-                    with contextlib.suppress(Exception):
-                        p.unlink()
-                log.info("Лишние кандидаты удалены (KEEP_CANDIDATES=0)")
-    except Exception as e:
-        log.warning(f"Не удалось обработать кандидатные артефакты: {e}")
-
-    log.info("Выбор лучшей модели завершен")
-    return best
+    log.info(f"Обучено моделей: {len(results)}")
+    return {"status": "parallel_training_complete", "models_count": len(results)}
 
 
 # Определение DAG
@@ -452,7 +316,6 @@ with DAG(
     params={
         "parallel": False,
         "enable_monitoring": False,
-        "keep_candidates": False,
         "force_download": False,
         "force_process": False,
         "force_train": False,
@@ -478,26 +341,31 @@ with DAG(
     validate_data = PythonOperator(
         task_id="validate_data",
         python_callable=_task_validate_data,
+        **callbacks,
     )
 
     inject_drift = PythonOperator(
         task_id="inject_drift",
         python_callable=_task_inject_drift,
+        **callbacks,
     )
 
     process = PythonOperator(
         task_id="process",
         python_callable=_task_process,
+        **callbacks,
     )
 
     drift_monitor = PythonOperator(
         task_id="drift_monitor",
         python_callable=_task_drift_monitor,
+        **callbacks,
     )
 
     train_standard = PythonOperator(
         task_id="train_standard",
         python_callable=_task_train_standard,
+        **callbacks,
     )
 
     from scripts.config import SELECTED_MODEL_KINDS

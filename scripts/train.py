@@ -1,4 +1,4 @@
-"""Пайплайн обучения с оптимизацией гиперпараметров Optuna и отслеживанием MLflow."""
+"""Обучение моделей с Optuna и MLflow без тестовых костылей."""
 
 import json
 import logging
@@ -26,13 +26,13 @@ from scripts.config import (
     MODEL_ARTEFACTS_DIR,
     MODEL_DIR,
     N_FOLDS,
+    NUMERIC_COLS,
     OPTUNA_STORAGE,
     SEED,
     SELECTED_MODEL_KINDS,
     STUDY_BASE_NAME,
     TRAIN_DEVICE,
 )
-from scripts.constants import NUMERIC_COLS
 from scripts.logging_config import get_logger
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
@@ -46,9 +46,8 @@ from scripts.train_modules import (
 
 log = get_logger("train")
 
-warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+# Сигнальные предупреждения не глушим полностью — оставляем только шумные future warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
-warnings.filterwarnings("ignore", category=UserWarning, module="optuna")
 
 logging.getLogger("mlflow").setLevel(logging.ERROR)
 logging.getLogger("optuna").setLevel(logging.ERROR)
@@ -149,7 +148,10 @@ def _extract_feature_importances(
     return res
 
 
-def run():
+def run(
+    force: bool = False,
+    selected_models: list[ModelKind] | None = None,
+):
     def signal_handler(signum, frame):
         log.warning("Получен сигнал %d, завершаю обучение...", signum)
         sys.exit(0)
@@ -163,19 +165,14 @@ def run():
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_ARTEFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    from scripts.config import FORCE_TRAIN
-
-    force_train = FORCE_TRAIN
-    log.info(
-        "FORCE_TRAIN=%s, наличие best_model=%s", force_train, BEST_MODEL_PATH.exists()
-    )
+    log.info("force=%s, наличие best_model=%s", force, BEST_MODEL_PATH.exists())
 
     from scripts.model_registry import load_old_model_metric
 
     old_model_metric = load_old_model_metric()
 
-    if BEST_MODEL_PATH.exists() and not force_train:
-        log.info("Модель уже существует и FORCE_TRAIN=False — пропуск")
+    if BEST_MODEL_PATH.exists() and not force:
+        log.info("Модель уже существует и force=False — пропуск")
         return
 
     x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
@@ -217,7 +214,11 @@ def run():
         # Оптимизируем каждую модель
         per_model_results: dict[ModelKind, dict[str, object]] = {}
 
-        for model_kind in SELECTED_MODEL_KINDS:
+        models_to_train: list[ModelKind] = (
+            selected_models if selected_models is not None else SELECTED_MODEL_KINDS
+        )
+
+        for model_kind in models_to_train:
             with mlflow.start_run(nested=True, run_name=f"model={model_kind.value}"):
                 log.info("Начало оптимизации модели: %s", model_kind.value)
 
@@ -352,7 +353,6 @@ def run():
             except (OSError, ValueError, KeyError, AttributeError) as e:
                 log.warning("Не удалось сохранить feature importances: %s", e)
 
-        # Снимок лучших трейлов Optuna (top-K)
         try:
             top_k = int(os.environ.get("OPTUNA_TOPK_EXPORT", "20"))
             study_name = best_info.get("study_name")
@@ -539,5 +539,11 @@ def run():
         )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Точка входа: запускает run() и завершает процесс кодом 0."""
     run()
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

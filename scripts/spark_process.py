@@ -20,8 +20,10 @@ from pyspark.sql.functions import (
     greatest,
     lit,
     rand,
+    row_number,
     when,
 )
+from pyspark.sql.window import Window
 
 from scripts.config import (
     CSV_NAME,
@@ -39,13 +41,16 @@ from scripts.config import (
 )
 
 from .logging_config import setup_auto_logging
-from .text_features import calculate_sentiment
+from .feature_engineering import calculate_sentiment
 
 log = setup_auto_logging()
 
 
-def process_data() -> None:
+def process_data(force: bool = False) -> None:
     """Основная функция обработки данных Spark.
+
+    Args:
+        force: Если True, обрабатывает заново даже если файлы существуют
 
     Выполняет:
     - Загрузку CSV
@@ -58,19 +63,14 @@ def process_data() -> None:
 
     Вызывается только на driver, никогда на worker-ах.
     """
-    # Проверяем флаг форсированной обработки
-    from scripts.config import FORCE_PROCESS
-
-    force_process = FORCE_PROCESS
-
     if (
-        not force_process
+        not force
         and DATA_PATHS.train.exists()
         and DATA_PATHS.val.exists()
         and DATA_PATHS.test.exists()
     ):
         log.warning(
-            "Обработанные данные уже существуют в %s. Для форсированной обработки установите флаг FORCE_PROCESS = True.",
+            "Обработанные данные уже существуют в %s. Для форсированной обработки используйте force=True.",
             str(PROCESSED_DATA_DIR),
         )
         return
@@ -106,8 +106,7 @@ def process_data() -> None:
         multiLine=True,
     )
 
-    # Единая очистка текста и извлечение базовых признаков
-    from scripts.text_features import (
+    from scripts.feature_engineering import (
         get_spark_clean_udf,
         get_spark_feature_extraction_udf,
     )
@@ -131,23 +130,21 @@ def process_data() -> None:
         df = df.withColumn(feature_name, col("features").getItem(feature_name))
     df = df.drop("features")
 
-    # Чистим данные: валидные тексты и оценки
-    clean = df.filter((col("reviewText").isNotNull()) & (col("overall").isNotNull()))
-    log.info("После фильтрации null: %s", clean.count())
+    # Чистим данные: валидные тексты и оценки, исключаем пустые/пробельные тексты
+    clean = df.filter(
+        (col("reviewText").isNotNull())
+        & (col("overall").isNotNull())
+        & (col("text_len") > 0)
+    )
+    log.info("После фильтрации null и пустых текстов: %s", clean.count())
 
-    class_counts = clean.groupBy("overall").count().collect()
-    min_class_size = min([row["count"] for row in class_counts])
-    sample_size = min(min_class_size, PER_CLASS_LIMIT)
-
-    balanced_dfs = []
-    for rating in [1, 2, 3, 4, 5]:
-        class_df = clean.filter(col("overall") == rating)
-        sampled = class_df.orderBy(rand(seed=42)).limit(sample_size)
-        balanced_dfs.append(sampled)
-
-    clean = balanced_dfs[0]
-    for df_part in balanced_dfs[1:]:
-        clean = clean.union(df_part)
+    # Балансировка через Window-функцию (эффективнее цикла по классам)
+    window_spec = Window.partitionBy("overall").orderBy(rand(seed=42))
+    clean = (
+        clean.withColumn("rn", row_number().over(window_spec))
+        .filter(col("rn") <= PER_CLASS_LIMIT)
+        .drop("rn")
+    )
     log.info(
         "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, clean.count()
     )
@@ -267,10 +264,12 @@ def process_data() -> None:
             "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
         )
 
-        train.write.mode("overwrite").parquet(str(DATA_PATHS.train))
-        val.write.mode("overwrite").parquet(str(DATA_PATHS.val))
-        test.write.mode("overwrite").parquet(str(DATA_PATHS.test))
+        train.repartition(4).write.mode("overwrite").parquet(str(DATA_PATHS.train))
+        val.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.val))
+        test.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.test))
     finally:
+        if 'clean' in locals() and hasattr(clean, 'unpersist'):
+            clean.unpersist()
         train.unpersist()
         val.unpersist()
         test.unpersist()

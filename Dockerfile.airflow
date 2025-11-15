@@ -2,22 +2,20 @@
 FROM apache/airflow:2.10.2
 
 USER root
-# Java для PySpark и logrotate для ротации логов, curl для healthcheck/startup проверок
+
 RUN apt-get update && \
     apt-get install -y default-jre-headless logrotate cron curl ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 
-# Копируем logrotate конфигурацию
 COPY logrotate.conf /etc/logrotate.d/kindle-reviews
 RUN chmod 644 /etc/logrotate.d/kindle-reviews
 
 USER airflow
 
-# Единый файл зависимостей
 COPY requirements.txt /tmp/requirements.txt
-# Обновляем pip/setuptools/wheel — часто улучшает поведение резолвера зависимостей
+
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip --version && \
     pip install --no-cache-dir -r /tmp/requirements.txt

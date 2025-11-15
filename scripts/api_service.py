@@ -14,11 +14,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
-from pydantic import BaseModel
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from textblob import TextBlob
+from pydantic import BaseModel, Field
 
 from .config import (
     BASELINE_NUMERIC_STATS_PATH,
@@ -40,8 +36,6 @@ MAX_BATCH_SIZE = 100
 
 
 class NumericFeatures(TypedDict, total=False):
-    """Числовые признаки для модели."""
-
     text_len: float
     word_count: float
     kindle_freq: float
@@ -66,7 +60,6 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-# Prometheus метрики
 REQUEST_COUNT = Counter(
     "api_requests_total",
     "Total API requests",
@@ -86,11 +79,16 @@ PREDICTION_COUNT = Counter(
     ["model_name"],
 )
 
-# Бизнес-метрики: распределение уверенности и классов
 PREDICTION_CONFIDENCE = Histogram(
     "prediction_confidence",
     "Max predicted probability per request item",
     buckets=(0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 1.0),
+)
+
+PREDICTION_DURATION = Histogram(
+    "prediction_duration",
+    "Prediction handler duration",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
 )
 
 PREDICTION_LABELS = Counter(
@@ -107,32 +105,22 @@ ERROR_COUNT = Counter(
 
 
 class PredictRequest(BaseModel):
-    """Запрос: список текстов и опциональные числовые признаки."""
-
-    texts: list[str]
+    texts: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_SIZE)
     numeric_features: dict[str, list[float]] | None = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "texts": ["This Kindle is amazing!", "Battery life is poor."],
+                "numeric_features": None,
+            }
+        }
 
 
 class PredictResponse(BaseModel):
-    """Метки, вероятности и опциональные предупреждения."""
-
     labels: list[int]
     probs: list[list[float]] | None = None
     warnings: dict[str, list[str]] | None = None
-
-
-class BatchPredictRequest(BaseModel):
-    """Пакетный запрос."""
-
-    data: list[dict[str, Any]]
-
-
-class BatchPredictResponse(BaseModel):
-    """Результат пакетного предсказания и предупреждения по объектам."""
-
-    predictions: list[dict[str, Any]]
-    # предупреждения по каждому объекту: item_{i} -> {category: [messages]}
-    warnings: dict[str, dict[str, list[str]]] | None = None
 
 
 class MetadataResponse(BaseModel):
@@ -144,12 +132,6 @@ class MetadataResponse(BaseModel):
 
 
 def create_app(defer_artifacts: bool = False) -> FastAPI:
-    """Фабрика приложения FastAPI.
-
-    Args:
-        defer_artifacts: Если True, пропускает загрузку артефактов на старте (удобно для тестов).
-    """
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         global _artifacts_loaded
@@ -158,8 +140,7 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
             _load_artifacts(app)
             _artifacts_loaded = True
 
-        # Инициализация метрик ошибок для корректной работы дашборда
-        for endpoint in ["/predict", "/batch_predict"]:
+        for endpoint in ["/predict"]:
             for error_type in ["model_not_loaded", "empty_input", "validation_error"]:
                 ERROR_COUNT.labels(
                     method="POST", endpoint=endpoint, error_type=error_type
@@ -177,21 +158,31 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
         title="Kindle Reviews API", version="1.0.0", lifespan=lifespan
     )
 
-    # Rate limiting
-    limiter = Limiter(key_func=get_remote_address)
-    application.state.limiter = limiter
-    application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    try:
+        from fastapi.responses import JSONResponse as _JSONResponse
+        import traceback as _tb
+        from pathlib import Path as _P
 
-    # Регистрация middleware и маршрутов
+        @application.exception_handler(Exception)
+        async def _unhandled_exc_handler(request, exc):
+            try:
+                tb = _tb.format_exc()
+                _p = _P("artefacts/last_api_error_global.txt")
+                _p.parent.mkdir(parents=True, exist_ok=True)
+                _p.write_text(tb, encoding="utf-8")
+            except Exception:
+                pass
+            return _JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+    except Exception:
+        pass
+
     _register_middlewares(application)
-    _register_routes(application, limiter)
+    _register_routes(application)
 
     return application
 
 
 def _register_middlewares(application: FastAPI) -> None:
-    """Регистрирует middleware для приложения."""
-
     @application.middleware("http")
     async def metrics_middleware(request: Request, call_next):
         start = time.perf_counter()
@@ -202,7 +193,7 @@ def _register_middlewares(application: FastAPI) -> None:
         REQUEST_COUNT.labels(
             method=request.method,
             endpoint=request.url.path,
-            status=response.status_code,
+            status=str(response.status_code),
         ).inc()
 
         REQUEST_DURATION.labels(
@@ -225,17 +216,13 @@ def _register_middlewares(application: FastAPI) -> None:
         return response
 
 
-def _register_routes(application: FastAPI, limiter: Limiter) -> None:
-    """Регистрирует маршруты API."""
-
+def _register_routes(application: FastAPI) -> None:
     @application.get("/health")
     def health():
-        """Liveness probe: API процесс жив."""
         return {"status": "alive"}
 
     @application.get("/ready")
     def ready(response: Response):
-        """Readiness probe: API готов обрабатывать запросы."""
         model_loaded = getattr(application.state, "MODEL", None) is not None
 
         if not model_loaded:
@@ -254,12 +241,10 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
 
     @application.get("/metrics")
     def metrics():
-        """Prometheus metrics endpoint."""
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @application.get("/metadata", response_model=MetadataResponse)
     def get_metadata():
-        """Возвращает метаданные модели и информацию о признаках."""
         meta = getattr(application.state, "META", {})
         feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
 
@@ -285,17 +270,22 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
             model_info=model_info, feature_contract=feature_info, health=health_info
         )
 
-    @application.post("/predict", response_model=PredictResponse)
-    @limiter.limit("100/minute")
+    @application.post("/predict")
     def predict(request: Request, req: PredictRequest):
         try:
+            start = time.perf_counter()
+            log.info("/predict called; MODEL=%s, FEATURE_CONTRACT=%s", type(getattr(application.state, 'MODEL', None)), getattr(application.state, 'FEATURE_CONTRACT', None))
+            _ensure_artifacts_loaded(application)
             labels, probs, warnings = _validate_and_predict(
                 application, "/predict", req.texts, req.numeric_features
             )
+            PREDICTION_DURATION.observe(time.perf_counter() - start)
 
-            return PredictResponse(
-                labels=[int(x) for x in labels], probs=probs, warnings=warnings
-            )
+            return {
+                "labels": [int(x) for x in labels],
+                "probs": probs,
+                "warnings": warnings,
+            }
         except HTTPException:
             raise
         except (ValueError, KeyError, TypeError) as e:
@@ -307,76 +297,128 @@ def _register_routes(application: FastAPI, limiter: Limiter) -> None:
             ERROR_COUNT.labels(
                 method="POST", endpoint="/predict", error_type="internal_error"
             ).inc()
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            log.exception("Internal error in /predict: %s", e)
+            import traceback as _tb
+            tb = _tb.format_exc()
+            try:
+                from pathlib import Path as _P
+                _p = _P("artefacts/last_api_error_predict.txt")
+                _p.parent.mkdir(parents=True, exist_ok=True)
+                _p.write_text(tb, encoding="utf-8")
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}") from e
+        except Exception as e:
+            ERROR_COUNT.labels(method="POST", endpoint="/predict", error_type="internal_error").inc()
+            import traceback as _tb
+            tb = _tb.format_exc()
+            try:
+                from pathlib import Path as _P
+                _p = _P("artefacts/last_api_error_predict.txt")
+                _p.parent.mkdir(parents=True, exist_ok=True)
+                _p.write_text(tb, encoding="utf-8")
+            except Exception:
+                pass
+            log.exception("Unhandled error in /predict: %s", e)
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}") from e
 
-    @application.post("/batch_predict", response_model=BatchPredictResponse)
-    @limiter.limit("50/minute")
-    def batch_predict(request: Request, req: BatchPredictRequest):
+    @application.post("/batch_predict")
+    def batch_predict(request: Request, payload: dict[str, Any]):
+        """Пакетное предсказание. Ожидает {"data": [{"reviewText": str, ...}, ...]}"""
         try:
-            # Формируем список текстов и числовых признаков из batch данных
-            rows: list[dict[str, Any]] = []
-            for item in req.data:
-                row: dict[str, Any] = {"reviewText": str(item.get("reviewText", ""))}
-                for key, value in item.items():
-                    if key != "reviewText" and isinstance(value, (int, float)):
-                        row[key] = float(value)
-                rows.append(row)
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list):
+                raise HTTPException(status_code=400, detail="Поле 'data' должно быть списком")
+            if len(data) == 0:
+                raise HTTPException(status_code=400, detail="Пустой список 'data'")
 
-            import pandas as _pd
+            texts: list[str] = []
+            numeric_map: dict[str, list[float]] = {}
+            for row in data:
+                if not isinstance(row, dict) or "reviewText" not in row:
+                    raise HTTPException(status_code=400, detail="Каждый элемент 'data' должен содержать 'reviewText'")
+                texts.append(str(row.get("reviewText", "")))
+                for k, v in row.items():
+                    if k == "reviewText":
+                        continue
+                    # Только числовые признаки
+                    if isinstance(v, (int, float)):
+                        numeric_map.setdefault(k, []).append(float(v))
+                    else:
+                        # Выравниваем длину, заполняя нулями для нечисловых значений
+                        numeric_map.setdefault(k, []).append(0.0)
 
-            df_in = _pd.DataFrame(rows)
-            texts = df_in["reviewText"].tolist()
+            start = time.perf_counter()
+            log.info("/batch_predict called; MODEL=%s, FEATURE_CONTRACT=%s", type(getattr(application.state, 'MODEL', None)), getattr(application.state, 'FEATURE_CONTRACT', None))
+            _ensure_artifacts_loaded(application)
+            labels, _, _ = _validate_and_predict(application, "/batch_predict", texts, numeric_map)
+            PREDICTION_DURATION.observe(time.perf_counter() - start)
+            return {"predictions": [int(x) for x in labels]}
 
-            numeric_features: dict[str, list[float]] | None = None
-            num_cols = [c for c in df_in.columns if c != "reviewText"]
-            if num_cols:
-                numeric_features = {c: df_in[c].tolist() for c in num_cols}
-
-            labels, probs, ignored = _validate_and_predict(
-                application, "/batch_predict", texts, numeric_features
-            )
-
-            all_ignored: dict[str, dict[str, list[str]]] | None = None
-            if ignored:
-                all_ignored = {"global": {"ignored_features": ignored}}
-
-            predictions = [
-                {
-                    "index": i,
-                    "prediction": int(labels[i]),
-                    **({"probabilities": probs[i]} if probs else {}),
-                }
-                for i in range(len(texts))
-            ]
-
-            return BatchPredictResponse(predictions=predictions, warnings=all_ignored)
         except HTTPException:
             raise
         except (ValueError, KeyError, TypeError) as e:
-            ERROR_COUNT.labels(
-                method="POST", endpoint="/batch_predict", error_type="bad_request"
-            ).inc()
+            ERROR_COUNT.labels(method="POST", endpoint="/batch_predict", error_type="validation_error").inc()
             raise HTTPException(status_code=400, detail=str(e)) from e
-        except (RuntimeError, FileNotFoundError, OSError) as e:
-            ERROR_COUNT.labels(
-                method="POST", endpoint="/batch_predict", error_type="internal_error"
-            ).inc()
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        except Exception as e:
+            ERROR_COUNT.labels(method="POST", endpoint="/batch_predict", error_type="internal_error").inc()
+            log.exception("Internal error in /batch_predict: %s", e)
+            import traceback as _tb
+            tb = _tb.format_exc()
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}\n{tb}") from e
 
     @application.get("/")
     def root():
-        """Корневой эндпоинт с информацией об API."""
         return {
             "service": "Kindle Reviews Sentiment Analysis API",
             "version": "1.0.0",
             "endpoints": {
                 "predict": "/predict (POST)",
-                "batch_predict": "/batch_predict (POST)",
                 "health": "/health (GET)",
                 "metrics": "/metrics (GET)",
             },
             "docs": "/docs",
         }
+
+
+def _validate_input(
+    texts: list[str],
+    numeric_features: dict[str, list[float]] | None,
+    expected_numeric_cols: list[str],
+) -> list[str]:
+    warnings: list[str] = []
+    n = len(texts)
+    if numeric_features:
+        for col, vals in numeric_features.items():
+            if col not in expected_numeric_cols:
+                warnings.append(f"Игнорирован {col}: неизвестный признак")
+            elif not isinstance(vals, list) or len(vals) != n:
+                warnings.append(f"Игнорирован {col}: длина {len(vals) if isinstance(vals, list) else 'n/a'} != {n}")
+    return warnings
+
+
+def _extract_features(
+    application: FastAPI,
+    texts: list[str],
+    numeric_features: dict[str, list[float]] | None,
+) -> tuple[pd.DataFrame, list[str]]:
+    feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
+    if not feature_contract:
+        raise RuntimeError(
+            "Feature contract (артефакты) не загружены — невозможно определить список признаков."
+        )
+    from .feature_engineering import transform_features
+
+    expected_cols = feature_contract.expected_numeric_columns
+    df, ignored = transform_features(texts, numeric_features, list(expected_cols))
+    return df, ignored
+
+
+def _fill_missing(df: pd.DataFrame, expected_numeric_cols: list[str]) -> pd.DataFrame:
+    for col in expected_numeric_cols:
+        if col not in df.columns:
+            df[col] = 0.0
+    return df
 
 
 def _validate_and_predict(
@@ -385,41 +427,12 @@ def _validate_and_predict(
     texts: list[str],
     numeric_features: dict[str, list[float]] | None = None,
 ) -> tuple[list[int], list[list[float]] | None, dict[str, list[str]] | None]:
-    """Общая логика валидации и предсказания для всех эндпоинтов.
-
-    Args:
-        application: FastAPI приложение
-        endpoint: Имя эндпоинта для логирования метрик
-        texts: Список текстов для предсказания
-        numeric_features: Опциональные числовые признаки
-
-    Returns:
-        Кортеж (предсказания, вероятности, предупреждения)
-
-    Raises:
-        HTTPException: При ошибках валидации или работы модели
-    """
     model = getattr(application.state, "MODEL", None)
     if model is None:
         ERROR_COUNT.labels(
             method="POST", endpoint=endpoint, error_type="model_not_loaded"
         ).inc()
         raise HTTPException(status_code=500, detail="Модель не загружена")
-
-    if not texts:
-        ERROR_COUNT.labels(
-            method="POST", endpoint=endpoint, error_type="empty_input"
-        ).inc()
-        raise HTTPException(status_code=400, detail="Список texts пуст")
-
-    if len(texts) > MAX_BATCH_SIZE:
-        ERROR_COUNT.labels(
-            method="POST", endpoint=endpoint, error_type="validation_error"
-        ).inc()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Размер батча {len(texts)} превышает максимум {MAX_BATCH_SIZE}",
-        )
 
     for i, text in enumerate(texts):
         if len(text) > MAX_TEXT_LENGTH:
@@ -435,22 +448,34 @@ def _validate_and_predict(
     model_name = meta.get("best_model", "unknown")
     PREDICTION_COUNT.labels(model_name=model_name).inc(len(texts))
 
-    labels, probs, warnings = _predict_with_model(
+    feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
+    expected_cols = (
+        feature_contract.expected_numeric_columns if feature_contract else []
+    )
+    input_warnings = _validate_input(texts, numeric_features, list(expected_cols))
+
+    labels, probs, ignored = _predict_with_model(
         application, model, texts, numeric_features
     )
 
-    # Бизнес-метрики
     if probs is not None:
         for p in probs:
             PREDICTION_CONFIDENCE.observe(max(p))
     for lbl in labels:
         PREDICTION_LABELS.labels(label=str(int(lbl))).inc()
 
-    return labels, probs, warnings
+    warnings_dict: dict[str, list[str]] | None = None
+    if input_warnings or ignored:
+        warnings_dict = {}
+        if input_warnings:
+            warnings_dict["input_issues"] = input_warnings
+        if ignored:
+            warnings_dict["ignored_features"] = ignored
+
+    return labels, probs, warnings_dict
 
 
 def _load_artifacts(application: FastAPI) -> None:
-    """Загружает модель и артефакты (метаданные, baseline статистики, контракт признаков)."""
     log.info("Загрузка артефактов модели...")
     if not BEST_MODEL_PATH.exists():
         log.warning(
@@ -465,7 +490,15 @@ def _load_artifacts(application: FastAPI) -> None:
     application.state.MODEL = joblib.load(BEST_MODEL_PATH)
     log.info("Модель загружена: %s", BEST_MODEL_PATH)
 
-    # Метаданные модели (обязательно)
+
+def _ensure_artifacts_loaded(application: FastAPI) -> None:
+    if getattr(application.state, "MODEL", None) is None and BEST_MODEL_PATH.exists():
+        try:
+            _load_artifacts(application)
+        except Exception as e:
+            log.exception("Не удалось лениво загрузить артефакты: %s", e)
+            raise
+
     if not BEST_MODEL_META_PATH.exists():
         log.warning("Метаданные модели не найдены: %s", BEST_MODEL_META_PATH)
         application.state.META = {}
@@ -499,19 +532,14 @@ def _load_artifacts(application: FastAPI) -> None:
     log.info("Артефакты модели успешно загружены")
 
 
-# (Дубликаты middleware и загрузчика артефактов удалены — логика вынесена в create_app)
-
-
 def _build_dataframe(
     application: FastAPI,
     texts: list[str],
     numeric_features: dict[str, list[float]] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Собирает DataFrame для предсказания и возвращает список проигнорованных признаков."""
     df = pd.DataFrame({"reviewText": texts})
     ignored_features = []
 
-    # Получаем список ожидаемых числовых колонок
     feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
     if not feature_contract:
         raise RuntimeError(
@@ -519,7 +547,6 @@ def _build_dataframe(
         )
     numeric_cols = feature_contract.expected_numeric_columns
 
-    # Если переданы числовые признаки, используем их
     if numeric_features:
         for col, values in numeric_features.items():
             if col not in numeric_cols:
@@ -529,61 +556,19 @@ def _build_dataframe(
             else:
                 df[col] = values
 
-    def _sentiment_textblob(s: pd.Series) -> pd.Series:
-        def calculate_sentiment(text):
-            if not text or len(str(text).strip()) < 3:
-                return 0.0
+    from .feature_engineering import transform_features
 
-            blob = TextBlob(str(text))
-            polarity = blob.sentiment.polarity
-            return float(max(-1.0, min(1.0, round(polarity, 4))))
+    df, ignored_calc = transform_features(
+        texts=df["reviewText"].tolist(),
+        numeric_features=numeric_features,
+        expected_numeric_cols=list(numeric_cols),
+    )
 
-        return s.apply(calculate_sentiment).astype(float)
-
-    def _text_feature_extractors():
-        return {
-            "text_len": lambda s: s.str.len().astype(float),
-            "word_count": lambda s: s.str.split().str.len().fillna(0).astype(float),
-            "kindle_freq": lambda s: s.str.lower().str.count("kindle").astype(float),
-            "exclamation_count": lambda s: s.str.count("!").astype(float),
-            "caps_ratio": lambda s: (
-                s.str.replace(r"[^A-Z]", "", regex=True).str.len().astype(float)
-                / s.str.len().clip(lower=1).astype(float)
-            ).fillna(0.0),
-            "question_count": lambda s: s.str.count(r"\?").astype(float),
-            "avg_word_length": lambda s: (
-                s.str.len().astype(float)
-                / s.str.split().str.len().clip(lower=1).astype(float)
-            ),
-            "sentiment": _sentiment_textblob,
-        }
-
-    s_raw = df["reviewText"].fillna("")
-    for col, extractor in _text_feature_extractors().items():
-        if col in numeric_cols and col not in df.columns and col != "sentiment":
-            df[col] = extractor(s_raw)
-
-    # Очистка текста
-    from scripts.text_features import clean_text
-
-    df["reviewText"] = s_raw.apply(clean_text)
-
-    if "sentiment" in numeric_cols and "sentiment" not in df.columns:
-        df["sentiment"] = _text_feature_extractors()["sentiment"](
-            df["reviewText"].fillna("")
-        )
-
-    # Недостающие числовые колонки — заполняем из baseline статистик
-    baseline_stats = getattr(application.state, "NUMERIC_DEFAULTS", {})
     missing_features = [col for col in numeric_cols if col not in df.columns]
-    if missing_features:
-        log.warning(
-            "Отсутствуют признаки %s — заполнены из baseline статистик (потенциальная утечка данных)",
-            missing_features,
-        )
     for col in missing_features:
-        default_val = baseline_stats.get(col, {}).get("mean", 0.0)
-        df[col] = default_val
+        df[col] = 0.0
+
+    ignored_features.extend(ignored_calc)
 
     return df, ignored_features
 
@@ -594,14 +579,7 @@ def _predict_with_model(
     texts: list[str],
     numeric_features: dict[str, list[float]] | None = None,
 ) -> tuple[list[int], list[list[float]] | None, list[str] | None]:
-    """Единая логика предсказаний.
-
-    Если модель DistilBERT — используем только тексты.
-    Иначе собираем DataFrame с числовыми признаками.
-    """
-    is_text_only = not hasattr(model, "named_steps") or (
-        hasattr(model, "named_steps") and "pre" not in getattr(model, "named_steps", {})
-    )
+    is_text_only = bool(getattr(model, "text_only", False))
     if is_text_only:
         preds = model.predict(pd.Series(texts))
         probs: list[list[float]] | None = None
@@ -627,7 +605,6 @@ def _predict_with_model(
 
 app = create_app()
 
-# Локальный запуск: uvicorn scripts.api_service:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
     import uvicorn
 

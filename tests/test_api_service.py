@@ -51,9 +51,11 @@ def mock_feature_contract():
 @pytest.fixture(scope="module")
 def test_client(mock_model, mock_feature_contract, tmp_path_factory):
     """Создаёт тестовый клиент FastAPI с моками и пропуском загрузки артефактов."""
-    # Патчим путь к модели и загрузку модели
+    tmp_model = tmp_path_factory.mktemp("model") / "best_model.joblib"
+    tmp_model.write_bytes(b"fake")
+    
     with (
-        patch("scripts.api_service.BEST_MODEL_PATH.exists", return_value=True),
+        patch("scripts.api_service.BEST_MODEL_PATH", tmp_model),
         patch("scripts.api_service.joblib.load", return_value=mock_model),
         patch("scripts.api_service.FeatureContract") as mock_contract_cls,
     ):
@@ -63,7 +65,6 @@ def test_client(mock_model, mock_feature_contract, tmp_path_factory):
 
         app = create_app(defer_artifacts=False)
         client = TestClient(app)
-        # Устанавливаем артефакты напрямую (чтобы не читать файлы)
         app.state.META = {"best_model": "logreg"}
         app.state.NUMERIC_DEFAULTS = {
             "text_len": {"mean": 10.0},

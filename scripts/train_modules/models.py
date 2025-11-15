@@ -39,6 +39,8 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
     Простейшая MLP (sklearn-совместимая) поверх плотных признаков.
     """
 
+    _device_logged_globally = False
+
     def __init__(
         self, hidden_dim=128, epochs=5, lr=1e-3, batch_size=256, seed=SEED, device=None
     ):
@@ -49,11 +51,10 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
         self.seed = seed
         self._fitted = False
         self._classes_ = None
-        self.classes_ = None  # публичный атрибут sklearn-совместимости
+        self.classes_ = None
         self._model = None
         self._device = device
         self._device_actual = None
-        self._device_logged = False
         if _TORCH is None:
             log.warning(
                 "SimpleMLP: torch не установлен — модель будет недоступна при fit()"
@@ -78,10 +79,9 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
 
         _TORCH.Generator().manual_seed(self.seed)
         device_str = _select_device(self._device)
-        # Логируем устройство только один раз за запуск
-        if not hasattr(self, "_device_logged") or not self._device_logged:
+        if not SimpleMLP._device_logged_globally:
             log.info("SimpleMLP: обучение на устройстве %s", device_str)
-            self._device_logged = True
+            SimpleMLP._device_logged_globally = True
         device = _TORCH.device(device_str)
 
         # Классы и индексация целевой переменной

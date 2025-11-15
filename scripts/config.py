@@ -10,20 +10,38 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from scripts.constants import (
-    BASELINE_NUMERIC_STATS_FILENAME,
-    BEST_MODEL_FILENAME,
-    BEST_MODEL_META_FILENAME,
-    DEFAULT_CSV_NAME,
-    DEFAULT_DRIFT_ARTEFACTS_SUBDIR,
-    DEFAULT_JSON_NAME,
-    DEFAULT_KAGGLE_DATASET,
-    DEFAULT_MODEL_ARTEFACTS_SUBDIR,
-    DEFAULT_MODEL_DIR,
-    DEFAULT_PROCESSED_DATA_DIR,
-    DEFAULT_RAW_DATA_DIR,
-)
 from scripts.models.kinds import ModelKind
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+DEFAULT_RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
+DEFAULT_PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
+DEFAULT_MODEL_DIR = PROJECT_ROOT / "artefacts"
+DEFAULT_MODEL_ARTEFACTS_SUBDIR = "model_artefacts"
+DEFAULT_DRIFT_ARTEFACTS_SUBDIR = "drift_artefacts"
+
+DEFAULT_KAGGLE_DATASET = "bharadwaj6/kindle-reviews"
+DEFAULT_CSV_NAME = "kindle_reviews.csv"
+DEFAULT_JSON_NAME = "kindle_reviews.json"
+
+BEST_MODEL_FILENAME = "best_model.joblib"
+BEST_MODEL_META_FILENAME = "best_model_meta.json"
+BASELINE_NUMERIC_STATS_FILENAME = "baseline_numeric_stats.json"
+
+NUMERIC_COLS: list[str] = [
+    "text_len",
+    "word_count",
+    "kindle_freq",
+    "sentiment",
+    "user_avg_len",
+    "user_review_count",
+    "item_avg_len",
+    "item_review_count",
+    "exclamation_count",
+    "caps_ratio",
+    "question_count",
+    "avg_word_length",
+]
 
 # Загружаем .env только если не в Airflow (Airflow использует env_file в docker-compose)
 if not os.environ.get("AIRFLOW_HOME"):
@@ -59,10 +77,9 @@ def _getenv_path(key: str, default: str) -> Path:
 
 SEED = _getenv_int("SEED", 42)
 
-# Директории
-RAW_DATA_DIR = _getenv_path("RAW_DATA_DIR", DEFAULT_RAW_DATA_DIR)
-PROCESSED_DATA_DIR = _getenv_path("PROCESSED_DATA_DIR", DEFAULT_PROCESSED_DATA_DIR)
-MODEL_DIR = _getenv_path("MODEL_DIR", DEFAULT_MODEL_DIR)
+RAW_DATA_DIR = _getenv_path("RAW_DATA_DIR", str(DEFAULT_RAW_DATA_DIR))
+PROCESSED_DATA_DIR = _getenv_path("PROCESSED_DATA_DIR", str(DEFAULT_PROCESSED_DATA_DIR))
+MODEL_DIR = _getenv_path("MODEL_DIR", str(DEFAULT_MODEL_DIR))
 MODEL_ARTEFACTS_DIR = _getenv_path(
     "MODEL_ARTEFACTS_DIR", str(MODEL_DIR / DEFAULT_MODEL_ARTEFACTS_SUBDIR)
 )
@@ -95,7 +112,7 @@ MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
 
 # Лимит сэмплирования на класс для балансировки датасета (компромисс между
 # скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
-PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 35000)
+PER_CLASS_LIMIT = 100  # _getenv_int("PER_CLASS_LIMIT", 35000)
 
 # Размер словаря TF-IDF — кратный 1024 для выравнивания в памяти
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
@@ -109,9 +126,9 @@ TFIDF_MAX_FEATURES_MAX = _getenv_int("TFIDF_MAX_FEATURES_MAX", 6000)
 TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
 
 # Обучение
-OPTUNA_N_TRIALS = _getenv_int(
-    "OPTUNA_N_TRIALS", 30
-)  # Компромисс между качеством оптимизации и временем
+OPTUNA_N_TRIALS = 3  # _getenv_int(
+# "OPTUNA_N_TRIALS", 30
+# )  # Компромисс между качеством оптимизации и временем
 OPTUNA_STORAGE = os.environ.get(
     "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
 )
@@ -132,9 +149,9 @@ DISTILBERT_MAX_EPOCHS = _getenv_int("DISTILBERT_MAX_EPOCHS", 8)
 SELECTED_MODEL_KINDS = [
     ModelKind.logreg,
     ModelKind.rf,
-    ModelKind.hist_gb,
+    # ModelKind.hist_gb,
     ModelKind.mlp,
-    ModelKind.distilbert,
+    # ModelKind.distilbert,
 ]
 
 # MLflow
