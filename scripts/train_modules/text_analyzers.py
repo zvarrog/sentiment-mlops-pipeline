@@ -4,16 +4,14 @@
 от mlflow/optuna и тяжёлой логики тренировки.
 """
 
-from __future__ import annotations
-
 import re
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Union
 
 from nltk.stem import SnowballStemmer
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 
-def make_tfidf_analyzer(use_stemming: bool) -> str | Callable[[str], Iterable[str]]:
+def make_tfidf_analyzer(use_stemming: bool) -> Union[str, Callable[[str], Iterable[str]]]:
 	"""Фабрика анализатора для TfidfVectorizer.
 
 	- Если use_stemming=False — возвращает стандартный анализатор "word".

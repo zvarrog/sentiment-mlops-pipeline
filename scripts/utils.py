@@ -27,10 +27,15 @@ def to_bool(x: Any, default: bool = False) -> bool:
         return bool(default)
     if isinstance(x, bool):
         return x
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in {"1", "true", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "no", "n", "off", ""}:
+            return False
+        return bool(default)
     if isinstance(x, (int, float)):
         return bool(x)
-    if isinstance(x, str):
-        return x.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(x)
 
 

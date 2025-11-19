@@ -37,13 +37,10 @@ from scripts.config import (
 from scripts.logging_config import get_logger
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
-from scripts.train_modules import (
-    ModelBuilderFactory,
-    compute_metrics,
-    load_splits,
-    log_confusion_matrix,
-    optimize_model,
-)
+from scripts.train_modules.data_loading import load_splits
+from scripts.train_modules.evaluation import compute_metrics, log_confusion_matrix
+from scripts.train_modules.optuna_optimizer import optimize_model
+from scripts.train_modules.pipeline_builders import ModelBuilderFactory
 
 log = get_logger("train")
 
@@ -252,7 +249,8 @@ def run(
 
         from scripts.model_registry import should_replace_model
 
-        if not should_replace_model(
+        # При force=True перезаписываем модель независимо от метрик
+        if not force and not should_replace_model(
             new_model_metric, old_model_metric, best_model.value
         ):
             return
@@ -535,8 +533,18 @@ def run(
 
 
 def main() -> None:
-    """Точка входа: запускает run() и завершает процесс кодом 0."""
-    run()
+    """Точка входа: парсит аргументы командной строки и запускает run()."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Обучение моделей с Optuna и MLflow")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Принудительное переобучение даже если модель существует",
+    )
+    args = parser.parse_args()
+
+    run(force=args.force)
     sys.exit(0)
 
 

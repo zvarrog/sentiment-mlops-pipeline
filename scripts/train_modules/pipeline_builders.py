@@ -37,13 +37,17 @@ class PipelineBuilder(ABC):
     def _build_preprocessor(
         self, use_stemming: bool, text_max_features: int
     ) -> ColumnTransformer:
-        tfidf = TfidfVectorizer(
-            max_features=text_max_features,
-            ngram_range=(1, 2),
-            dtype=np.float32,
-            stop_words="english",
-            analyzer=make_tfidf_analyzer(use_stemming),
-        )
+        analyzer = make_tfidf_analyzer(use_stemming)
+        tfidf_params = {
+            "max_features": text_max_features,
+            "dtype": np.float32,
+            "analyzer": analyzer,
+        }
+        if analyzer == "word":
+            tfidf_params["ngram_range"] = (1, 2)
+            tfidf_params["stop_words"] = "english"
+        
+        tfidf = TfidfVectorizer(**tfidf_params)
 
         use_svd = self.trial.suggest_categorical("use_svd", [False, True])
         text_steps = [("tfidf", tfidf)]
@@ -124,13 +128,17 @@ class LogRegBuilder(PipelineBuilder):
         )
 
         # LogisticRegression не использует SVD, поэтому создаем упрощенный препроцессор
-        tfidf = TfidfVectorizer(
-            max_features=text_max_features,
-            ngram_range=(1, 2),
-            dtype=np.float32,
-            stop_words="english",
-            analyzer=make_tfidf_analyzer(use_stemming),
-        )
+        analyzer = make_tfidf_analyzer(use_stemming)
+        tfidf_params = {
+            "max_features": text_max_features,
+            "dtype": np.float32,
+            "analyzer": analyzer,
+        }
+        if analyzer == "word":
+            tfidf_params["ngram_range"] = (1, 2)
+            tfidf_params["stop_words"] = "english"
+        
+        tfidf = TfidfVectorizer(**tfidf_params)
 
         text_pipeline = Pipeline([("tfidf", tfidf)])
 
@@ -218,7 +226,7 @@ class RandomForestBuilder(PipelineBuilder):
             max_depth=max_depth,
             min_samples_split=min_samples_split,
             bootstrap=bootstrap,
-            n_jobs=-1,
+            n_jobs=1,
             random_state=SEED,
         )
         steps.append(("model", clf))
