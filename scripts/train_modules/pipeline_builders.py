@@ -35,7 +35,7 @@ class PipelineBuilder(ABC):
         pass
 
     def _build_preprocessor(
-        self, use_stemming: bool, text_max_features: int
+        self, use_stemming: bool, text_max_features: int, skip_svd: bool = False
     ) -> ColumnTransformer:
         analyzer = make_tfidf_analyzer(use_stemming)
         tfidf_params = {
@@ -45,18 +45,24 @@ class PipelineBuilder(ABC):
         }
         if analyzer == "word":
             tfidf_params["ngram_range"] = (1, 2)
-            tfidf_params["stop_words"] = "english"
-        
+            tfidf_params["stop_words"] = None
+
         tfidf = TfidfVectorizer(**tfidf_params)
 
-        use_svd = self.trial.suggest_categorical("use_svd", [False, True])
         text_steps = [("tfidf", tfidf)]
 
-        if use_svd:
-            svd_components = self.trial.suggest_int("svd_components", 20, 100, step=20)
-            text_steps.append(
-                ("svd", TruncatedSVD(n_components=svd_components, random_state=SEED))
-            )
+        if not skip_svd:
+            use_svd = self.trial.suggest_categorical("use_svd", [False, True])
+            if use_svd:
+                svd_components = self.trial.suggest_int(
+                    "svd_components", 20, 100, step=20
+                )
+                text_steps.append(
+                    (
+                        "svd",
+                        TruncatedSVD(n_components=svd_components, random_state=SEED),
+                    )
+                )
 
         text_pipeline = Pipeline(text_steps)
 
@@ -81,7 +87,6 @@ class PipelineBuilder(ABC):
                 ("num", numeric_pipeline, numeric_available),
             ],
             transformer_weights={"text": text_weight, "num": numeric_weight},
-            # sparse_threshold: порог разреженности для вывода sparse матрицы (0.3 = 30% ненулевых значений)
             sparse_threshold=0.3,
         )
 
@@ -127,46 +132,9 @@ class LogRegBuilder(PipelineBuilder):
             step=TFIDF_MAX_FEATURES_STEP,
         )
 
-        # LogisticRegression не использует SVD, поэтому создаем упрощенный препроцессор
-        analyzer = make_tfidf_analyzer(use_stemming)
-        tfidf_params = {
-            "max_features": text_max_features,
-            "dtype": np.float32,
-            "analyzer": analyzer,
-        }
-        if analyzer == "word":
-            tfidf_params["ngram_range"] = (1, 2)
-            tfidf_params["stop_words"] = "english"
-        
-        tfidf = TfidfVectorizer(**tfidf_params)
-
-        text_pipeline = Pipeline([("tfidf", tfidf)])
-
-        numeric_available = [
-            c
-            for c in NUMERIC_COLS
-            if c in self.trial.user_attrs.get("numeric_cols", NUMERIC_COLS)
-        ]
-        numeric_pipeline = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="constant", fill_value=0)),
-                ("scaler", StandardScaler()),
-            ]
+        preprocessor = self._build_preprocessor(
+            use_stemming, text_max_features, skip_svd=True
         )
-
-        text_weight = self.trial.suggest_float("text_weight", 0.1, 1.0)
-        numeric_weight = self.trial.suggest_float("numeric_weight", 1.0, 10.0)
-
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ("text", text_pipeline, "reviewText"),
-                ("num", numeric_pipeline, numeric_available),
-            ],
-            transformer_weights={"text": text_weight, "num": numeric_weight},
-            # sparse_threshold: порог разреженности для вывода sparse матрицы (0.3 = 30% ненулевых значений)
-            sparse_threshold=0.3,
-        )
-
         steps = [("pre", preprocessor)]
 
         c_value = self.trial.suggest_float("logreg_C", 1e-4, 1e2, log=True)
@@ -176,7 +144,7 @@ class LogRegBuilder(PipelineBuilder):
             )
         else:
             solver = self.trial.suggest_categorical(
-                "logreg_solver", ["lbfgs", "liblinear", "saga"]
+                "logreg_solver", ["lbfgs", "liblinear"]  # "saga" медленно сходится на больших данных
             )
 
         pen_others = self.trial.suggest_categorical(

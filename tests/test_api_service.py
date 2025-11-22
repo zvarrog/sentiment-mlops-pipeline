@@ -53,7 +53,7 @@ def test_client(mock_model, mock_feature_contract, tmp_path_factory):
     """Создаёт тестовый клиент FastAPI с моками и пропуском загрузки артефактов."""
     tmp_model = tmp_path_factory.mktemp("model") / "best_model.joblib"
     tmp_model.write_bytes(b"fake")
-    
+
     with (
         patch("scripts.api_service.BEST_MODEL_PATH", tmp_model),
         patch("scripts.api_service.joblib.load", return_value=mock_model),

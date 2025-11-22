@@ -21,6 +21,15 @@ from scripts.logging_config import get_logger
 log = get_logger("drift_monitor")
 
 
+def _calculate_bin_cuts(data: np.ndarray, bins: int = 10) -> np.ndarray:
+    """Вычисляет границы бинов по квантилям для PSI."""
+    clean_data = data[~np.isnan(data)]
+    if len(clean_data) < 2:
+        return np.array([])
+    q = np.linspace(0, 1, bins + 1)
+    return np.unique(np.quantile(clean_data, q))
+
+
 def psi(
     expected: np.ndarray,
     actual: np.ndarray,
@@ -42,12 +51,14 @@ def psi(
     actual = actual[~np.isnan(actual)]
     if len(expected) < MIN_SAMPLES_FOR_PSI or len(actual) < MIN_SAMPLES_FOR_PSI:
         return 0.0
+
     # Единые бины: по квантилям expected (train)
     if cuts is None:
-        quantiles = np.linspace(0, 1, bins + 1)
-        cuts = np.unique(np.quantile(expected, quantiles))
+        cuts = _calculate_bin_cuts(expected, bins=bins)
+
     if len(cuts) <= 2:
         return 0.0
+
     exp_counts = np.histogram(expected, bins=cuts)[0].astype(float)
     act_counts = np.histogram(actual, bins=cuts)[0].astype(float)
     exp_pct = (exp_counts + 1e-6) / (exp_counts.sum() + 1e-6 * len(exp_counts))
@@ -97,6 +108,8 @@ def run_drift_monitor(
         c.strip() for c in os.getenv("DRIFT_IGNORE_COLS", "").split(",") if c.strip()
     }
 
+    from typing import cast
+
     def _safe_values(series: pd.Series) -> np.ndarray:
         return series.fillna(0).astype(float).values
 
@@ -108,10 +121,11 @@ def run_drift_monitor(
             continue
         if col not in new_df.columns or col not in train_df.columns:
             continue
-        actual = _safe_values(new_df[col])
-        expected = _safe_values(train_df[col])
-        q = np.linspace(0, 1, 11)
-        cuts = np.unique(np.quantile(expected[~np.isnan(expected)], q))
+        actual = _safe_values(cast(pd.Series, new_df[col]))
+        expected = _safe_values(cast(pd.Series, train_df[col]))
+
+        # Используем helper для вычисления cuts, чтобы гарантировать идентичность бинов
+        cuts = _calculate_bin_cuts(expected[~np.isnan(expected)], bins=10)
         val = psi(expected, actual, cuts=cuts)
 
         report.append(
@@ -150,8 +164,10 @@ def run_drift_monitor(
                 if not col or col not in new_df.columns or col not in train_df.columns:
                     continue
 
-                expected_arr = train_df[col].fillna(0).astype(float).values
-                actual = new_df[col].fillna(0).astype(float).values
+                expected_arr = (
+                    cast(pd.Series, train_df[col]).fillna(0).astype(float).values
+                )
+                actual = cast(pd.Series, new_df[col]).fillna(0).astype(float).values
 
                 plt.figure(figsize=(6, 4))
                 plt.hist(

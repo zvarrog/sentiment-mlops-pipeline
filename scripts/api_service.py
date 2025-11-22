@@ -36,8 +36,6 @@ log = get_logger("api_service")
 MAX_TEXT_LENGTH = 10_000
 MAX_BATCH_SIZE = 100
 
-_artifacts_loaded = False
-
 
 def signal_handler(signum, frame):
     log.info("Получен сигнал %s, завершаем обработку", signum)
@@ -120,11 +118,9 @@ class MetadataResponse(BaseModel):
 def create_app(defer_artifacts: bool = False) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        global _artifacts_loaded
-
-        if not defer_artifacts and not _artifacts_loaded:
+        if not defer_artifacts and not getattr(app.state, "_artifacts_loaded", False):
             _load_artifacts(app)
-            _artifacts_loaded = True
+            app.state._artifacts_loaded = True
 
         for endpoint in ["/predict"]:
             for error_type in ["model_not_loaded", "empty_input", "validation_error"]:
@@ -150,7 +146,9 @@ def create_app(defer_artifacts: bool = False) -> FastAPI:
         @application.exception_handler(Exception)
         async def _unhandled_exc_handler(request, exc):
             log.exception("Unhandled exception in API: %s", exc)
-            return _JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+            return _JSONResponse(
+                status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"}
+            )
     except Exception:
         pass
 
@@ -252,7 +250,6 @@ def _register_routes(application: FastAPI) -> None:
     def predict(request: Request, req: PredictRequest):
         try:
             start = time.perf_counter()
-            log.info("/predict called; MODEL=%s, FEATURE_CONTRACT=%s", type(getattr(application.state, 'MODEL', None)), getattr(application.state, 'FEATURE_CONTRACT', None))
             _ensure_artifacts_loaded(application)
             labels, probs, warnings = _validate_and_predict(
                 application, "/predict", req.texts, req.numeric_features
@@ -272,9 +269,13 @@ def _register_routes(application: FastAPI) -> None:
             ).inc()
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
-            ERROR_COUNT.labels(method="POST", endpoint="/predict", error_type="internal_error").inc()
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/predict", error_type="internal_error"
+            ).inc()
             log.exception("Error in /predict: %s", e)
-            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}") from e
+            raise HTTPException(
+                status_code=500, detail=f"{type(e).__name__}: {e}"
+            ) from e
 
     @application.post("/batch_predict")
     def batch_predict(request: Request, payload: dict[str, Any]):
@@ -282,7 +283,9 @@ def _register_routes(application: FastAPI) -> None:
         try:
             data = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(data, list):
-                raise HTTPException(status_code=400, detail="Поле 'data' должно быть списком")
+                raise HTTPException(
+                    status_code=400, detail="Поле 'data' должно быть списком"
+                )
             if len(data) == 0:
                 raise HTTPException(status_code=400, detail="Пустой список 'data'")
 
@@ -290,7 +293,10 @@ def _register_routes(application: FastAPI) -> None:
             numeric_map: dict[str, list[float]] = {}
             for row in data:
                 if not isinstance(row, dict) or "reviewText" not in row:
-                    raise HTTPException(status_code=400, detail="Каждый элемент 'data' должен содержать 'reviewText'")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Каждый элемент 'data' должен содержать 'reviewText'",
+                    )
                 texts.append(str(row.get("reviewText", "")))
                 for k, v in row.items():
                     if k == "reviewText":
@@ -303,21 +309,28 @@ def _register_routes(application: FastAPI) -> None:
                         numeric_map.setdefault(k, []).append(0.0)
 
             start = time.perf_counter()
-            log.info("/batch_predict called; MODEL=%s, FEATURE_CONTRACT=%s", type(getattr(application.state, 'MODEL', None)), getattr(application.state, 'FEATURE_CONTRACT', None))
             _ensure_artifacts_loaded(application)
-            labels, _, _ = _validate_and_predict(application, "/batch_predict", texts, numeric_map)
+            labels, _, _ = _validate_and_predict(
+                application, "/batch_predict", texts, numeric_map
+            )
             PREDICTION_DURATION.observe(time.perf_counter() - start)
             return {"predictions": [int(x) for x in labels]}
 
         except HTTPException:
             raise
         except (ValueError, KeyError, TypeError) as e:
-            ERROR_COUNT.labels(method="POST", endpoint="/batch_predict", error_type="validation_error").inc()
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/batch_predict", error_type="validation_error"
+            ).inc()
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
-            ERROR_COUNT.labels(method="POST", endpoint="/batch_predict", error_type="internal_error").inc()
+            ERROR_COUNT.labels(
+                method="POST", endpoint="/batch_predict", error_type="internal_error"
+            ).inc()
             log.exception("Error in /batch_predict: %s", e)
-            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}") from e
+            raise HTTPException(
+                status_code=500, detail=f"{type(e).__name__}: {e}"
+            ) from e
 
     @application.get("/")
     def root():
@@ -345,7 +358,9 @@ def _validate_input(
             if col not in expected_numeric_cols:
                 warnings.append(f"Игнорирован {col}: неизвестный признак")
             elif not isinstance(vals, list) or len(vals) != n:
-                warnings.append(f"Игнорирован {col}: длина {len(vals) if isinstance(vals, list) else 'n/a'} != {n}")
+                warnings.append(
+                    f"Игнорирован {col}: длина {len(vals) if isinstance(vals, list) else 'n/a'} != {n}"
+                )
     return warnings
 
 
@@ -484,47 +499,6 @@ def _ensure_artifacts_loaded(application: FastAPI) -> None:
     log.info("Артефакты модели успешно загружены")
 
 
-def _build_dataframe(
-    application: FastAPI,
-    texts: list[str],
-    numeric_features: dict[str, list[float]] | None = None,
-) -> tuple[pd.DataFrame, list[str]]:
-    df = pd.DataFrame({"reviewText": texts})
-    ignored_features = []
-
-    feature_contract = getattr(application.state, "FEATURE_CONTRACT", None)
-    if not feature_contract:
-        raise RuntimeError(
-            "Feature contract (артефакты) не загружены — невозможно определить список признаков. Проверьте наличие артефактов модели."
-        )
-    numeric_cols = feature_contract.expected_numeric_columns
-
-    if numeric_features:
-        for col, values in numeric_features.items():
-            if col not in numeric_cols:
-                ignored_features.append(f"{col} (неизвестный признак)")
-            elif len(values) != len(texts):
-                ignored_features.append(f"{col} (длина {len(values)} != {len(texts)})")
-            else:
-                df[col] = values
-
-    from .feature_engineering import transform_features
-
-    df, ignored_calc = transform_features(
-        texts=df["reviewText"].tolist(),
-        numeric_features=numeric_features,
-        expected_numeric_cols=list(numeric_cols),
-    )
-
-    missing_features = [col for col in numeric_cols if col not in df.columns]
-    for col in missing_features:
-        df[col] = 0.0
-
-    ignored_features.extend(ignored_calc)
-
-    return df, ignored_features
-
-
 def _predict_with_model(
     application: FastAPI,
     model: Any,
@@ -543,7 +517,7 @@ def _predict_with_model(
                 probs = None
         return [int(x) for x in preds], probs, None
 
-    df, ignored = _build_dataframe(application, texts, numeric_features)
+    df, ignored = _extract_features(application, texts, numeric_features)
     preds = model.predict(df)
     probs: list[list[float]] | None = None
     if hasattr(model, "predict_proba"):

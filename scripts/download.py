@@ -6,6 +6,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pandas as pd
+
 try:
     from tenacity import (
         retry,
@@ -56,6 +57,7 @@ def _download_with_retry() -> None:
 def main(force: bool = False) -> Path:
     """Скачивание датасета Kaggle. Возвращает абсолютный путь к CSV."""
     from .config import FORCE_DOWNLOAD
+
     if force is False:
         force = bool(FORCE_DOWNLOAD)
 

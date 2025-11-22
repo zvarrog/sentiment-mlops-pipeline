@@ -51,9 +51,6 @@ logging.getLogger("mlflow").setLevel(logging.ERROR)
 logging.getLogger("optuna").setLevel(logging.ERROR)
 logging.getLogger("git").setLevel(logging.ERROR)
 
-_model_sig = "_".join([m.value[:3] for m in sorted(SELECTED_MODEL_KINDS)])
-OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
-
 
 def log_artifact_safe(path: Path, artifact_name: str) -> None:
     """Безопасное логирование артефакта в MLflow."""
@@ -440,25 +437,6 @@ def run(
                 y_score = final_pipeline.predict_proba(x_for_proba)
                 classes = sorted(set(y_test.tolist()))
                 y_true_bin = label_binarize(y_test, classes=classes)
-                # Защита: некоторые модели возвращают proba без последнего класса
-                if y_score.shape[1] != y_true_bin.shape[1]:
-                    # Приведём к общему виду, заполняя недостающие классы нулями
-                    import numpy as _np
-
-                    proba_aligned = _np.zeros(
-                        (y_score.shape[0], y_true_bin.shape[1]), dtype=float
-                    )
-                    # Предполагаем порядок классов как в model.classes_, если доступен
-                    try:
-                        cls_model = list(getattr(final_pipeline, "classes_", []))
-                    except AttributeError:
-                        cls_model = []
-                    for j, c in enumerate(classes):
-                        if cls_model and c in cls_model:
-                            src_idx = cls_model.index(c)
-                            if src_idx < y_score.shape[1]:
-                                proba_aligned[:, j] = y_score[:, src_idx]
-                    y_score = proba_aligned
 
                 # ROC micro-average
                 import matplotlib

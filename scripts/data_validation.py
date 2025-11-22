@@ -28,7 +28,7 @@ class DataSchema:
 
     required_columns: set[str]
     optional_columns: set[str]
-    column_types: dict[str, str]  # колонка -> ожидаемый тип
+    column_types: dict[str, str | list[str]]  # колонка -> ожидаемый тип
     numeric_ranges: dict[str, tuple]  # числовая колонка -> (min, max)
     text_constraints: dict[str, dict[str, Any]]  # текстовая колонка -> ограничения
 
@@ -40,7 +40,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len",
         "word_count",
         "kindle_freq",
-        "sentiment_score",
+        "sentiment",
         "has_punctuation",
         "avg_word_length",
         "upper_ratio",
@@ -50,7 +50,6 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "unixReviewTime",
         "asin",
         "reviewerID",
-        "sentiment",
         "words",
         "user_review_count",
         "item_review_count",
@@ -74,7 +73,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len": ["float32"],
         "word_count": ["float32"],
         "kindle_freq": ["float32"],
-        "sentiment_score": ["float64", "int32"],
+        "sentiment": ["float64", "float32"],
         "has_punctuation": ["float64", "int32"],
         "avg_word_length": ["float64", "int32"],
         "upper_ratio": ["float64", "int32"],
@@ -85,7 +84,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len": (0, 50000),
         "word_count": (0, 10000),
         "kindle_freq": (0.0, 50.0),
-        "sentiment_score": (-1.0, 1.0),
+        "sentiment": (-1.0, 1.0),
         "has_punctuation": (0.0, 1.0),
         "avg_word_length": (0.0, 50.0),
         "upper_ratio": (0.0, 1.0),

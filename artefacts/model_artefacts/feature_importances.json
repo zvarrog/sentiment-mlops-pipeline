@@ -1,202 +1,202 @@
 [
   {
-    "feature": "sentiment",
-    "importance": 0.05025999633322023
+    "feature": "not",
+    "importance": 3.555893702743062
   },
   {
-    "feature": "svd_5[seri,love,read...]",
-    "importance": 0.026832920474221117
+    "feature": "enjoyed",
+    "importance": 3.4659450825947387
   },
   {
-    "feature": "svd_3[didn,stori,like...]",
-    "importance": 0.02131648620693046
+    "feature": "no",
+    "importance": 3.1370177963725423
   },
   {
-    "feature": "svd_7[end,charact,good...]",
-    "importance": 0.02123276171600716
+    "feature": "okay",
+    "importance": 3.124948515675281
   },
   {
-    "feature": "svd_1[enjoy,read,seri...]",
-    "importance": 0.019006782285054053
+    "feature": "loved",
+    "importance": 3.094249383663737
   },
   {
-    "feature": "svd_12[sex,great,heroin...]",
-    "importance": 0.01467373182557223
+    "feature": "nothing",
+    "importance": 2.9584300701967448
   },
   {
-    "feature": "svd_11[enjoy,short,did...]",
-    "importance": 0.013875374376724807
+    "feature": "highly",
+    "importance": 2.8083055623608297
   },
   {
-    "feature": "svd_97[averi,car,right...]",
-    "importance": 0.012745785696854755
+    "feature": "unfortunately",
+    "importance": 2.8022616620511256
   },
   {
-    "feature": "svd_54[plot,pretti,life...]",
-    "importance": 0.012606386718618159
+    "feature": "stars",
+    "importance": 2.7410894879187278
   },
   {
-    "feature": "svd_14[short,love,recip...]",
-    "importance": 0.012016912400594644
+    "feature": "fun",
+    "importance": 2.6383077314328576
   },
   {
-    "feature": "svd_21[develop,page,keep...]",
-    "importance": 0.011416985494427472
+    "feature": "enjoyed this",
+    "importance": 2.58915608880522
   },
   {
-    "feature": "svd_82[time,action,review...]",
-    "importance": 0.011369926088276945
+    "feature": "liked",
+    "importance": 2.5757759822028032
   },
   {
-    "feature": "svd_35[sex,great,fun...]",
-    "importance": 0.011351865099851153
+    "feature": "ok",
+    "importance": 2.5547896253883176
   },
   {
-    "feature": "svd_8[good,read,expect...]",
-    "importance": 0.010795883211303592
+    "feature": "waste",
+    "importance": 2.4549376702808217
   },
   {
-    "feature": "svd_0[book,stori,read...]",
-    "importance": 0.010680136661644175
+    "feature": "didn",
+    "importance": 2.4327397632712895
   },
   {
-    "feature": "svd_43[plot,expect,make...]",
-    "importance": 0.010675453112402757
+    "feature": "definitely",
+    "importance": 2.40826891732314
   },
   {
-    "feature": "svd_46[need,worth,start...]",
-    "importance": 0.010540839379132179
+    "feature": "potential",
+    "importance": 2.3852563370295203
   },
   {
-    "feature": "svd_63[fun,way,develop...]",
-    "importance": 0.010254255727708123
+    "feature": "could have",
+    "importance": 2.354721813552035
   },
   {
-    "feature": "svd_95[joke,real,miss...]",
-    "importance": 0.010077298909692669
+    "feature": "excellent",
+    "importance": 2.346901527499609
   },
   {
-    "feature": "svd_94[definit,hope,move...]",
-    "importance": 0.009913828753199344
+    "feature": "wait",
+    "importance": 2.320838924450786
   },
   {
-    "feature": "svd_84[excit,feel,girl...]",
-    "importance": 0.009892004853834402
+    "feature": "fantastic",
+    "importance": 2.3032246141258765
   },
   {
-    "feature": "avg_word_length",
-    "importance": 0.009878936406923729
+    "feature": "sweet",
+    "importance": 2.3012099452819395
   },
   {
-    "feature": "svd_67[say,sexi,children...]",
-    "importance": 0.009874388491131598
+    "feature": "well",
+    "importance": 2.254006183915301
   },
   {
-    "feature": "svd_2[stori,book,short...]",
-    "importance": 0.009716135191034697
+    "feature": "will",
+    "importance": 2.244409412768452
   },
   {
-    "feature": "svd_41[talk,develop,heroin...]",
-    "importance": 0.009707188853471264
+    "feature": "don",
+    "importance": 2.2410373200870004
   },
   {
-    "feature": "svd_6[just,book,written...]",
-    "importance": 0.009653023518717772
+    "feature": "can wait",
+    "importance": 2.199089005669948
   },
   {
-    "feature": "svd_4[short,didn,read...]",
-    "importance": 0.00960927157152964
+    "feature": "boring",
+    "importance": 2.1901945119660873
   },
   {
-    "feature": "svd_64[feel,peopl,hard...]",
-    "importance": 0.009479831448665143
+    "feature": "poorly",
+    "importance": 2.158439350382083
   },
   {
-    "feature": "svd_18[don,heroin,recip...]",
-    "importance": 0.009417422960665023
+    "feature": "pages",
+    "importance": 2.1582951161240658
   },
   {
-    "feature": "svd_83[line,mysteri,place...]",
-    "importance": 0.009347657372048498
+    "feature": "for me",
+    "importance": 2.1384894496843483
   },
   {
-    "feature": "svd_57[men,line,live...]",
-    "importance": 0.009152066174433749
+    "feature": "loved this",
+    "importance": 2.1244591079850714
   },
   {
-    "feature": "svd_71[hard,plant,finish...]",
-    "importance": 0.009119402603000678
+    "feature": "overall",
+    "importance": 2.1149230511991854
   },
   {
-    "feature": "svd_20[recip,written,like...]",
-    "importance": 0.00908082202189001
+    "feature": "free",
+    "importance": 2.099078766214687
   },
   {
-    "feature": "svd_58[car,bit,peopl...]",
-    "importance": 0.009046265343539821
+    "feature": "amazing",
+    "importance": 2.0759014612238467
   },
   {
-    "feature": "svd_81[henri,mean,plant...]",
-    "importance": 0.009014497014888191
+    "feature": "not worth",
+    "importance": 2.0272944640138646
   },
   {
-    "feature": "svd_27[bad,better,plot...]",
-    "importance": 0.008957323891478387
+    "feature": "at all",
+    "importance": 2.0182751970649213
   },
   {
-    "feature": "svd_62[cover,know,mail...]",
-    "importance": 0.008874139986261857
+    "feature": "must read",
+    "importance": 1.9980053789241012
   },
   {
-    "feature": "svd_61[children,hope,fiction...]",
-    "importance": 0.008800807098288056
+    "feature": "ridiculous",
+    "importance": 1.9875667555187952
   },
   {
-    "feature": "svd_72[get,car,children...]",
-    "importance": 0.008790514022918324
+    "feature": "bit",
+    "importance": 1.976907981335701
   },
   {
-    "feature": "svd_10[written,author,end...]",
-    "importance": 0.00877842685931151
+    "feature": "hot",
+    "importance": 1.9762887590850564
   },
   {
-    "feature": "svd_90[wish,learn,right...]",
-    "importance": 0.00876396699128278
+    "feature": "even",
+    "importance": 1.9590254888210166
   },
   {
-    "feature": "svd_26[page,sex,did...]",
-    "importance": 0.008758454282457733
+    "feature": "unbelievable",
+    "importance": 1.9579231347002306
   },
   {
-    "feature": "svd_68[happen,car,review...]",
-    "importance": 0.00874866361608854
+    "feature": "great",
+    "importance": 1.9510510587293541
   },
   {
-    "feature": "svd_47[write,time,thought...]",
-    "importance": 0.00871928561796917
+    "feature": "however",
+    "importance": 1.8923556288847394
   },
   {
-    "feature": "svd_33[great,expect,tri...]",
-    "importance": 0.008714181434230141
+    "feature": "really enjoyed",
+    "importance": 1.8887071420073471
   },
   {
-    "feature": "svd_29[expect,cover,line...]",
-    "importance": 0.00868573204461767
+    "feature": "just didn",
+    "importance": 1.8874992619931859
   },
   {
-    "feature": "svd_30[did,kindl,need...]",
-    "importance": 0.008676125302069489
+    "feature": "enjoyable",
+    "importance": 1.8797783239599188
   },
   {
-    "feature": "svd_9[realli,like,short...]",
-    "importance": 0.00866915034130629
+    "feature": "little",
+    "importance": 1.879447734778627
   },
   {
-    "feature": "text_len",
-    "importance": 0.008635881811443789
+    "feature": "lacking",
+    "importance": 1.8720625796718817
   },
   {
-    "feature": "svd_48[cover,start,mail...]",
-    "importance": 0.008542978623137238
+    "feature": "hooked",
+    "importance": 1.859616823474174
   }
 ]

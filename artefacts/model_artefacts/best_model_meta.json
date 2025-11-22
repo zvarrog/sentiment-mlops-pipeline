@@ -1,27 +1,24 @@
 {
-  "best_model": "rf",
+  "best_model": "logreg",
   "best_params": {
-    "use_stemming": true,
-    "tfidf_max_features": 5000,
-    "use_svd": true,
-    "svd_components": 100,
-    "text_weight": 0.7435632764667296,
-    "numeric_weight": 4.062711764665497,
-    "rf_n_estimators": 200,
-    "rf_max_depth": 18,
-    "rf_min_samples_split": 7,
-    "rf_bootstrap": false
+    "use_stemming": false,
+    "tfidf_max_features": 2000,
+    "text_weight": 0.8339152856093507,
+    "numeric_weight": 7.361716094628554,
+    "logreg_C": 2.3661540064603184,
+    "logreg_solver": "lbfgs",
+    "logreg_penalty_liblinear_saga": "l1"
   },
-  "best_val_f1_macro": 0.39670551670551674,
+  "best_val_f1_macro": 0.5249743342060744,
   "test_metrics": {
-    "accuracy": 0.36486486486486486,
-    "f1_macro": 0.34324657652662766,
-    "f1_weighted": 0.33200417903103324
+    "accuracy": 0.5301752977385253,
+    "f1_macro": 0.5259699799863599,
+    "f1_weighted": 0.5271867826105452
   },
   "sizes": {
-    "train": 346,
-    "val": 80,
-    "test": 74
+    "train": 34961,
+    "val": 7566,
+    "test": 7473
   },
-  "duration_sec": 20.86008882522583
+  "duration_sec": 9467.243525981903
 }

@@ -110,7 +110,7 @@ MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
 
 # Лимит сэмплирования на класс для балансировки датасета (компромисс между
 # скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
-PER_CLASS_LIMIT = 100  # _getenv_int("PER_CLASS_LIMIT", 35000)
+PER_CLASS_LIMIT = 10000 #_getenv_int("PER_CLASS_LIMIT", 35000)
 
 # Размер словаря TF-IDF — кратный 1024 для выравнивания в памяти
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
@@ -124,9 +124,9 @@ TFIDF_MAX_FEATURES_MAX = _getenv_int("TFIDF_MAX_FEATURES_MAX", 6000)
 TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
 
 # Обучение
-OPTUNA_N_TRIALS = 3  # _getenv_int(
-# "OPTUNA_N_TRIALS", 30
-# )  # Компромисс между качеством оптимизации и временем
+OPTUNA_N_TRIALS = _getenv_int(
+    "OPTUNA_N_TRIALS", 30
+)  # Компромисс между качеством оптимизации и временем
 OPTUNA_STORAGE = os.environ.get(
     "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
 )
@@ -147,7 +147,7 @@ DISTILBERT_MAX_EPOCHS = _getenv_int("DISTILBERT_MAX_EPOCHS", 8)
 SELECTED_MODEL_KINDS = [
     ModelKind.logreg,
     ModelKind.rf,
-    # ModelKind.hist_gb,
+    ModelKind.hist_gb,
     ModelKind.mlp,
     # ModelKind.distilbert,
 ]

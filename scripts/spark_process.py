@@ -40,8 +40,8 @@ from scripts.config import (
     SPARK_NUM_CORES,
 )
 
-from .logging_config import setup_auto_logging
 from .feature_engineering import calculate_sentiment
+from .logging_config import setup_auto_logging
 
 log = setup_auto_logging()
 
@@ -114,11 +114,9 @@ def process_data(force: bool = False) -> None:
     clean_udf = get_spark_clean_udf()
     feature_udf = get_spark_feature_extraction_udf()
 
-    # Нормализуем текст
-    df = df.withColumn("reviewText", clean_udf(col("reviewText")))
-
-    # Извлекаем признаки в MapType и разворачиваем в колонки
     df = df.withColumn("features", feature_udf(col("reviewText")))
+
+    df = df.withColumn("reviewText", clean_udf(col("reviewText")))
     for feature_name in [
         "text_len",
         "word_count",
@@ -268,15 +266,13 @@ def process_data(force: bool = False) -> None:
         val.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.val))
         test.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.test))
     finally:
-        if 'clean' in locals() and hasattr(clean, 'unpersist'):
-            clean.unpersist()
+        clean.unpersist()
         train.unpersist()
         val.unpersist()
         test.unpersist()
-        # Очищаем кэши агрегатов (если переменные определены)
-        if "user_stats" in locals() and hasattr(user_stats, "unpersist"):
+        if "user_stats" in locals():
             user_stats.unpersist()
-        if "item_stats" in locals() and hasattr(item_stats, "unpersist"):
+        if "item_stats" in locals():
             item_stats.unpersist()
 
     log.info(

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 import pandas as pd
 
 REQUIRED_TEXT_COL = "reviewText"
@@ -55,7 +56,9 @@ class FeatureContract:
 
         return cls([REQUIRED_TEXT_COL], expected_numeric, baseline_stats)
 
-    def validate_input_data(self, data: dict[str, Any] | pd.DataFrame) -> dict[str, list[str]]:
+    def validate_input_data(
+        self, data: dict[str, Any] | pd.DataFrame
+    ) -> dict[str, list[str]]:
         """Возвращает словарь предупреждений по входным данным."""
         if isinstance(data, pd.DataFrame):
             data = {c: data[c].tolist() for c in data.columns}
@@ -85,7 +88,10 @@ class FeatureContract:
                 std = baseline.get("std", 1.0)
                 if std > 0:
                     for i, v in enumerate(values):
-                        if isinstance(v, (int, float)) and abs(v - mean) > OUTLIER_SIGMAS * std:
+                        if (
+                            isinstance(v, (int, float))
+                            and abs(v - mean) > OUTLIER_SIGMAS * std
+                        ):
                             outliers.append(
                                 f"{col}[{i}]: {v} (≈{mean:.2f}±{OUTLIER_SIGMAS * std:.2f})"
                             )
