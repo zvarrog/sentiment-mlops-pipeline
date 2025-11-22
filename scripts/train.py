@@ -22,6 +22,7 @@ from sklearn.pipeline import Pipeline
 
 from scripts.config import (
     BEST_MODEL_PATH,
+    MLFLOW_EXPERIMENT_NAME,
     MLFLOW_TRACKING_URI,
     MODEL_ARTEFACTS_DIR,
     MODEL_DIR,
@@ -36,13 +37,10 @@ from scripts.config import (
 from scripts.logging_config import get_logger
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
-from scripts.train_modules import (
-    ModelBuilderFactory,
-    compute_metrics,
-    load_splits,
-    log_confusion_matrix,
-    optimize_model,
-)
+from scripts.train_modules.data_loading import load_splits
+from scripts.train_modules.evaluation import compute_metrics, log_confusion_matrix
+from scripts.train_modules.optuna_optimizer import optimize_model
+from scripts.train_modules.pipeline_builders import ModelBuilderFactory
 
 log = get_logger("train")
 
@@ -52,11 +50,6 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 logging.getLogger("mlflow").setLevel(logging.ERROR)
 logging.getLogger("optuna").setLevel(logging.ERROR)
 logging.getLogger("git").setLevel(logging.ERROR)
-
-EXPERIMENT_NAME: str = os.environ.get("MLFLOW_EXPERIMENT_NAME", "kindle_experiment")
-
-_model_sig = "_".join([m.value[:3] for m in sorted(SELECTED_MODEL_KINDS)])
-OPTUNA_STUDY_NAME = f"{STUDY_BASE_NAME}_{_model_sig}"
 
 
 def log_artifact_safe(path: Path, artifact_name: str) -> None:
@@ -160,7 +153,7 @@ def run(
     signal.signal(signal.SIGINT, signal_handler)
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_ARTEFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,7 +173,6 @@ def run(
         "Размеры: train=%d, val=%d, test=%d", len(x_train), len(x_val), len(x_test)
     )
 
-    mlflow.set_experiment(EXPERIMENT_NAME)
     start_time = time.time()
 
     with mlflow.start_run(run_name="classical_pipeline"):
@@ -254,7 +246,8 @@ def run(
 
         from scripts.model_registry import should_replace_model
 
-        if not should_replace_model(
+        # При force=True перезаписываем модель независимо от метрик
+        if not force and not should_replace_model(
             new_model_metric, old_model_metric, best_model.value
         ):
             return
@@ -331,18 +324,16 @@ def run(
         # Feature importances (для классических моделей)
         if best_model is not ModelKind.distilbert:
             try:
+                # Детектируем use_svd по финальному пайплайну
                 use_svd_flag = False
-                try:
-                    # Предпочитаем детектировать по финальному пайплайну
-                    pre: ColumnTransformer | None = final_pipeline.named_steps.get(
-                        "pre"
-                    )
-                    if pre is not None:
+                pre: ColumnTransformer | None = final_pipeline.named_steps.get("pre")
+                if pre is not None:
+                    try:
                         text_pipe: Pipeline = pre.named_transformers_["text"]
                         use_svd_flag = "svd" in getattr(text_pipe, "named_steps", {})
-                except (KeyError, AttributeError):
-                    # Фолбэк по best_params
-                    use_svd_flag = bool(best_params.get("use_svd", False))
+                    except (KeyError, AttributeError):
+                        # Фолбэк по best_params
+                        use_svd_flag = bool(best_params.get("use_svd", False))
 
                 fi_list = _extract_feature_importances(final_pipeline, use_svd_flag)
                 if fi_list:
@@ -384,10 +375,10 @@ def run(
 
         # Схема входа/выхода модели и реально использованные фичи
         try:
+            classes = sorted(set(y_full.tolist()))
             schema: dict[str, object] = {"input": {}, "output": {}}
             if best_model is ModelKind.distilbert:
                 schema["input"] = {"text_column": "reviewText"}
-                classes = sorted(set(y_full.tolist()))
                 schema["output"] = {"target_dtype": "int", "classes": classes}
             else:
                 pre: ColumnTransformer = final_pipeline.named_steps.get("pre")
@@ -419,7 +410,6 @@ def run(
                     "text": text_info,
                     "numeric_features": numeric_cols_used,
                 }
-                classes = sorted(set(y_full.tolist()))
                 schema["output"] = {"target_dtype": "int", "classes": classes}
 
             schema_path = MODEL_ARTEFACTS_DIR / "model_schema.json"
@@ -447,25 +437,6 @@ def run(
                 y_score = final_pipeline.predict_proba(x_for_proba)
                 classes = sorted(set(y_test.tolist()))
                 y_true_bin = label_binarize(y_test, classes=classes)
-                # Защита: некоторые модели возвращают proba без последнего класса
-                if y_score.shape[1] != y_true_bin.shape[1]:
-                    # Приведём к общему виду, заполняя недостающие классы нулями
-                    import numpy as _np
-
-                    proba_aligned = _np.zeros(
-                        (y_score.shape[0], y_true_bin.shape[1]), dtype=float
-                    )
-                    # Предполагаем порядок классов как в model.classes_, если доступен
-                    try:
-                        cls_model = list(getattr(final_pipeline, "classes_", []))
-                    except AttributeError:
-                        cls_model = []
-                    for j, c in enumerate(classes):
-                        if cls_model and c in cls_model:
-                            src_idx = cls_model.index(c)
-                            if src_idx < y_score.shape[1]:
-                                proba_aligned[:, j] = y_score[:, src_idx]
-                    y_score = proba_aligned
 
                 # ROC micro-average
                 import matplotlib
@@ -540,8 +511,18 @@ def run(
 
 
 def main() -> None:
-    """Точка входа: запускает run() и завершает процесс кодом 0."""
-    run()
+    """Точка входа: парсит аргументы командной строки и запускает run()."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Обучение моделей с Optuna и MLflow")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Принудительное переобучение даже если модель существует",
+    )
+    args = parser.parse_args()
+
+    run(force=args.force)
     sys.exit(0)
 
 

@@ -1,6 +1,7 @@
 """Общая логика работы с моделями и MLflow Registry."""
 
 import json
+import os
 from pathlib import Path
 
 from scripts.config import MODEL_ARTEFACTS_DIR, MODEL_PRODUCTION_THRESHOLD
@@ -8,7 +9,6 @@ from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
 
 log = get_logger(__name__)
-
 
 
 def load_old_model_metric() -> float | None:
@@ -122,9 +122,6 @@ def register_model_in_mlflow(
                 test_f1_macro,
                 MODEL_PRODUCTION_THRESHOLD,
             )
-            # Оставляем последние N продакшен‑версий, остальные архивируем
-            import os
-
             try:
                 keep_n = int(os.environ.get("MLFLOW_KEEP_LATEST", "3"))
             except (ValueError, TypeError):

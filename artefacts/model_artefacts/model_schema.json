@@ -2,7 +2,7 @@
   "input": {
     "text": {
       "text_column": "reviewText",
-      "text_dim": 100
+      "text_dim": 2000
     },
     "numeric_features": [
       "text_len",

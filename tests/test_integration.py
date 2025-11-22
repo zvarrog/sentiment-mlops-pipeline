@@ -81,7 +81,9 @@ class TestTrainPipeline:
         # Проверяем создание основных артефактов
         model_path = model_dir / "best_model.joblib"
         if not model_path.exists():
-            pytest.skip("best_model.joblib не создан (возможна урезанная среда/зависимости)")
+            pytest.skip(
+                "best_model.joblib не создан (возможна урезанная среда/зависимости)"
+            )
         assert model_path.stat().st_size > 0, "best_model.joblib пустой"
 
         # Проверяем метрики
@@ -183,6 +185,7 @@ class TestAirflowDAG:
     def test_dag_imports_without_errors(self):
         """Проверка импорта DAG без ошибок."""
         import importlib.util
+
         pytest.importorskip("airflow.decorators")
 
         dag_path = (
@@ -201,6 +204,7 @@ class TestAirflowDAG:
     def test_dag_has_required_tasks(self):
         """Проверка наличия обязательных задач в DAG."""
         import importlib.util
+
         pytest.importorskip("airflow.decorators")
 
         dag_path = (

@@ -27,11 +27,16 @@ def to_bool(x: Any, default: bool = False) -> bool:
         return bool(default)
     if isinstance(x, bool):
         return x
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in {"1", "true", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "no", "n", "off", ""}:
+            return False
+        return bool(default)
     if isinstance(x, (int, float)):
         return bool(x)
-    if isinstance(x, str):
-        return x.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(x)
+    return bool(default)
 
 
 def get_value(context: dict, name: str, default: str | None = None) -> str:
@@ -72,7 +77,6 @@ def atomic_write_json(path, data: dict, **kwargs):
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=kwargs.get("indent", 2))
-        # Атомарное переименование (на POSIX это атомарно)
         os.replace(temp_path, path)
     except Exception:
         if temp_path.exists():

@@ -282,9 +282,6 @@ def generate_best_bundle(
         "sizes": sizes,
     }
     meta_path = out_dir / "best_model_meta.json"
-
-    from scripts.utils import atomic_write_json
-
     atomic_write_json(meta_path, meta)
 
     return meta

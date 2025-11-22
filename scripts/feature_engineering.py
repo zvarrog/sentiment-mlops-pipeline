@@ -8,15 +8,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import cast
 
 import pandas as pd
 
 
-def clean_text(text: str, max_length: int = 5000) -> str:
+def clean_text(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
 
-    text = text[:max_length]
     text = text.lower()
     import re
 
@@ -99,6 +99,7 @@ def extract_basic_text_features(clean_series: pd.Series) -> pd.DataFrame:
     text_len = s.str.len().astype(float)
     word_count = s.str.split().str.len().fillna(0).astype(float)
     import re
+
     kindle_freq = s.str.count("kindle", flags=re.IGNORECASE).astype(float)
     exclamation_count = s.str.count("!").astype(float)
     caps_ratio = (
@@ -127,11 +128,13 @@ def transform_features(
     expected_numeric_cols: list[str],
 ) -> tuple[pd.DataFrame, list[str]]:
     df = pd.DataFrame({"reviewText": list(texts)})
-    df["reviewText"] = df["reviewText"].fillna("").apply(clean_text)
+    raw_texts = df["reviewText"].fillna("")
+    txt_df = extract_basic_text_features(cast(pd.Series, raw_texts))
 
-    txt_df = extract_basic_text_features(df["reviewText"])
+    df["reviewText"] = raw_texts.apply(clean_text)
+
     df = pd.concat([df, txt_df], axis=1)
-    df["sentiment"] = calculate_sentiment_series(df["reviewText"])
+    df["sentiment"] = calculate_sentiment_series(cast(pd.Series, df["reviewText"]))
 
     ignored: list[str] = []
     if numeric_features:
@@ -141,7 +144,9 @@ def transform_features(
                 ignored.append(f"{col} (неизвестный признак)")
                 continue
             if not isinstance(values, list) or len(values) != n:
-                ignored.append(f"{col} (длина {len(values) if isinstance(values, list) else 'n/a'} != {n})")
+                ignored.append(
+                    f"{col} (длина {len(values) if isinstance(values, list) else 'n/a'} != {n})"
+                )
                 continue
             try:
                 df[col] = pd.Series(values, index=df.index).astype(float)
