@@ -69,14 +69,14 @@ def sample_parquet_files_small(tmp_path_factory) -> Iterator[Path]:
     data = {
         "reviewText": np.random.choice(
             [
-                "хорошо",
-                "плохо",
-                "отлично",
-                "не понравилось",
-                "супер",
-                "ужасно",
-                "нормально",
-                "великолепно",
+                "This product is excellent and works perfectly",
+                "Terrible quality, very disappointed with purchase",
+                "Amazing device, highly recommend to everyone",
+                "Waste of money, stopped working after week",
+                "Great value for the price, satisfied customer",
+                "Poor design and cheap materials used throughout",
+                "Outstanding performance, exceeded my expectations completely",
+                "Mediocre at best, nothing special about it",
             ],
             size=n_total,
         ),

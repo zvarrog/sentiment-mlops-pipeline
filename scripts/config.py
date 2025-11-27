@@ -110,7 +110,16 @@ MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
 
 # Лимит сэмплирования на класс для балансировки датасета (компромисс между
 # скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
-PER_CLASS_LIMIT = 10000 #_getenv_int("PER_CLASS_LIMIT", 35000)
+
+
+def _getenv_set(key: str, default: str = "") -> set[str]:
+    """Парсит по запятым строку из env в set."""
+    val = os.environ.get(key, default)
+    return {c.strip() for c in val.split(",") if c.strip()}
+
+
+# Дрейф: колонки для игнорирования при расчёте PSI
+DRIFT_IGNORE_COLS = _getenv_set("DRIFT_IGNORE_COLS", "")
 
 # Размер словаря TF-IDF — кратный 1024 для выравнивания в памяти
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
@@ -155,7 +164,8 @@ SELECTED_MODEL_KINDS = [
 # MLflow
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "kindle_reviews")
-MODEL_PRODUCTION_THRESHOLD = 0.75
+MLFLOW_KEEP_LATEST = _getenv_int("MLFLOW_KEEP_LATEST", 3)
+MODEL_PRODUCTION_THRESHOLD = _getenv_float("MODEL_PRODUCTION_THRESHOLD", 0.75)
 
 # Spark ресурсы
 SPARK_DRIVER_MEMORY = os.environ.get("SPARK_DRIVER_MEMORY", "6g")
@@ -172,6 +182,12 @@ DB_POOL_RECYCLE = _getenv_int("DB_POOL_RECYCLE", 3600)
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
 LOG_INCLUDE_TIMESTAMP = _getenv_bool("LOG_INCLUDE_TIMESTAMP", True)
+
+# API
+API_HOST = os.environ.get("API_HOST", "127.0.0.1")
+API_PORT = _getenv_int("API_PORT", 8000)
+MAX_TEXT_LENGTH = 2000
+MAX_BATCH_SIZE = 100
 
 
 @dataclass

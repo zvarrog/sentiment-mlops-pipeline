@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import cast
 
 import pandas as pd
+from textblob import TextBlob
 
 
 def clean_text(text: str) -> str:
@@ -18,8 +20,6 @@ def clean_text(text: str) -> str:
         return ""
 
     text = text.lower()
-    import re
-
     text = re.sub(r"http\S+", " ", text)
     text = re.sub(r"[^a-z ]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -30,8 +30,6 @@ def calculate_sentiment(text: str) -> float:
     if not text or len(text.strip()) < 3:
         return 0.0
     try:
-        from textblob import TextBlob
-
         blob = TextBlob(text)
         polarity = blob.sentiment.polarity
         return float(max(-1.0, min(1.0, round(polarity, 4))))
@@ -40,6 +38,7 @@ def calculate_sentiment(text: str) -> float:
 
 
 def extract_text_features(text: str) -> dict[str, float]:
+    """Извлекает признаки из одного текста (для Spark UDF/единичных запросов)."""
     if not text or not isinstance(text, str):
         return {
             "text_len": 0.0,
@@ -49,6 +48,8 @@ def extract_text_features(text: str) -> dict[str, float]:
             "caps_ratio": 0.0,
             "question_count": 0.0,
         }
+
+    # NOTE: Логика должна совпадать с extract_basic_text_features
     text_len = float(len(text))
     words = text.split()
     word_count = float(len(words))
@@ -57,6 +58,7 @@ def extract_text_features(text: str) -> dict[str, float]:
     question_count = float(text.count("?"))
     caps_count = sum(1 for c in text if c.isupper())
     caps_ratio = caps_count / max(text_len, 1.0)
+
     return {
         "text_len": text_len,
         "word_count": word_count,
@@ -94,18 +96,21 @@ def calculate_sentiment_series(s: pd.Series) -> pd.Series:
 
 
 def extract_basic_text_features(clean_series: pd.Series) -> pd.DataFrame:
+    """Векторизованное извлечение признаков для pandas (для обучения/батч-предикта)."""
     s = clean_series.fillna("")
 
     text_len = s.str.len().astype(float)
     word_count = s.str.split().str.len().fillna(0).astype(float)
-    import re
 
     kindle_freq = s.str.count("kindle", flags=re.IGNORECASE).astype(float)
     exclamation_count = s.str.count("!").astype(float)
+
+    # Оптимизированный подсчет заглавных
     caps_ratio = (
         s.str.replace(r"[^A-Z]", "", regex=True).str.len().astype(float)
         / text_len.clip(lower=1.0)
     ).fillna(0.0)
+
     question_count = s.str.count(r"\?").astype(float)
     avg_word_length = (text_len / word_count.clip(lower=1.0)).astype(float)
 
@@ -127,14 +132,22 @@ def transform_features(
     numeric_features: dict[str, list[float]] | None,
     expected_numeric_cols: list[str],
 ) -> tuple[pd.DataFrame, list[str]]:
+    """Основная точка входа для подготовки фичей.
+
+    Порядок обработки:
+    1. Извлечение текстовых признаков (caps_ratio, exclamation_count) из сырого текста
+    2. Очистка текста для TF-IDF
+    3. Расчёт sentiment по очищенному тексту для консистентности с train pipeline
+    """
     df = pd.DataFrame({"reviewText": list(texts)})
+
     raw_texts = df["reviewText"].fillna("")
     txt_df = extract_basic_text_features(cast(pd.Series, raw_texts))
 
     df["reviewText"] = raw_texts.apply(clean_text)
+    df["sentiment"] = calculate_sentiment_series(cast(pd.Series, df["reviewText"]))
 
     df = pd.concat([df, txt_df], axis=1)
-    df["sentiment"] = calculate_sentiment_series(cast(pd.Series, df["reviewText"]))
 
     ignored: list[str] = []
     if numeric_features:
@@ -153,6 +166,7 @@ def transform_features(
             except (ValueError, TypeError):
                 ignored.append(f"{col} (нечисловые значения)")
 
+    # Заполняем пропуски для ожидаемых колонок
     for col in expected_numeric_cols:
         if col not in df.columns:
             df[col] = 0.0

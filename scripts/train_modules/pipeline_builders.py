@@ -14,7 +14,16 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
-from scripts.config import NUMERIC_COLS, SEED, TRAIN_DEVICE
+from scripts.config import (
+    DISTILBERT_MAX_EPOCHS,
+    DISTILBERT_MIN_EPOCHS,
+    NUMERIC_COLS,
+    SEED,
+    TFIDF_MAX_FEATURES_MAX,
+    TFIDF_MAX_FEATURES_MIN,
+    TFIDF_MAX_FEATURES_STEP,
+    TRAIN_DEVICE,
+)
 from scripts.models.distilbert import DistilBertClassifier
 from scripts.models.kinds import ModelKind
 from scripts.train_modules.models import SimpleMLP
@@ -93,8 +102,6 @@ class PipelineBuilder(ABC):
 
 class DistilBertBuilder(PipelineBuilder):
     def build(self) -> Pipeline:
-        from scripts.config import DISTILBERT_MAX_EPOCHS, DISTILBERT_MIN_EPOCHS
-
         epochs = self.trial.suggest_int(
             "db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS
         )
@@ -118,12 +125,6 @@ class LogRegBuilder(PipelineBuilder):
         self.fixed_solver = fixed_solver
 
     def build(self) -> Pipeline:
-        from scripts.config import (
-            TFIDF_MAX_FEATURES_MAX,
-            TFIDF_MAX_FEATURES_MIN,
-            TFIDF_MAX_FEATURES_STEP,
-        )
-
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
         text_max_features = self.trial.suggest_int(
             "tfidf_max_features",
@@ -144,7 +145,8 @@ class LogRegBuilder(PipelineBuilder):
             )
         else:
             solver = self.trial.suggest_categorical(
-                "logreg_solver", ["lbfgs", "liblinear"]  # "saga" медленно сходится на больших данных
+                "logreg_solver",
+                ["lbfgs", "liblinear"],  # "saga" медленно сходится на больших данных
             )
 
         pen_others = self.trial.suggest_categorical(
@@ -167,12 +169,6 @@ class LogRegBuilder(PipelineBuilder):
 
 class RandomForestBuilder(PipelineBuilder):
     def build(self) -> Pipeline:
-        from scripts.config import (
-            TFIDF_MAX_FEATURES_MAX,
-            TFIDF_MAX_FEATURES_MIN,
-            TFIDF_MAX_FEATURES_STEP,
-        )
-
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
         text_max_features = self.trial.suggest_int(
             "tfidf_max_features",
@@ -203,12 +199,6 @@ class RandomForestBuilder(PipelineBuilder):
 
 class MLPBuilder(PipelineBuilder):
     def build(self) -> Pipeline:
-        from scripts.config import (
-            TFIDF_MAX_FEATURES_MAX,
-            TFIDF_MAX_FEATURES_MIN,
-            TFIDF_MAX_FEATURES_STEP,
-        )
-
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
         text_max_features = self.trial.suggest_int(
             "tfidf_max_features",
@@ -232,12 +222,6 @@ class MLPBuilder(PipelineBuilder):
 
 class HistGBBuilder(PipelineBuilder):
     def build(self) -> Pipeline:
-        from scripts.config import (
-            TFIDF_MAX_FEATURES_MAX,
-            TFIDF_MAX_FEATURES_MIN,
-            TFIDF_MAX_FEATURES_STEP,
-        )
-
         use_stemming = self.trial.suggest_categorical("use_stemming", [False, True])
         text_max_features = self.trial.suggest_int(
             "tfidf_max_features",

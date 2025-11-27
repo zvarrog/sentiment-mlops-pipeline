@@ -1,7 +1,11 @@
+import logging
+
 import numpy as np
 import torch
 from sklearn.base import BaseEstimator, ClassifierMixin
 from transformers import AutoModel, AutoTokenizer
+
+log = logging.getLogger(__name__)
 
 
 class DistilBertClassifier(BaseEstimator, ClassifierMixin):
@@ -63,10 +67,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         # Автовыбор устройства
         device_str = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        import logging
-
-        log = logging.getLogger(__name__)
-        log.info(f"DistilBERT training on device: {device_str}")
+        log.info("DistilBERT training on device: %s", device_str)
 
         # Валидация устройства
         if device_str not in ["cpu", "cuda"] and not device_str.startswith("cuda:"):
@@ -119,10 +120,11 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 with torch.no_grad():
                     out = self._base_model(**enc)
                     cls = out.last_hidden_state[:, 0]
-                    logits = self._head(cls)
-                    loss = loss_fn(
-                        logits, torch.tensor(by, dtype=torch.long, device=device)
-                    )
+                # накопление градиентов
+                logits = self._head(cls)
+                loss = loss_fn(
+                    logits, torch.tensor(by, dtype=torch.long, device=device)
+                )
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()

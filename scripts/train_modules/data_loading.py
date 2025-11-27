@@ -40,8 +40,10 @@ def load_splits() -> tuple[
         temp_x, x_test, temp_y, y_test = train_test_split(
             full, y_full, test_size=0.15, stratify=y_full, random_state=SEED
         )
+        # 0.17647 ≈ 0.15 / 0.85 — чтобы получить 15% val от исходного датасета
+        val_size_ratio = 0.15 / 0.85
         x_train, x_val, y_train, y_val = train_test_split(
-            temp_x, temp_y, test_size=0.17647, stratify=temp_y, random_state=SEED
+            temp_x, temp_y, test_size=val_size_ratio, stratify=temp_y, random_state=SEED
         )
     else:
         x_train = frames["train"]

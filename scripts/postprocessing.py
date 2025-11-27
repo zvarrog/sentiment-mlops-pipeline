@@ -20,19 +20,35 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import (
+    auc,
+    average_precision_score,
+    classification_report,
+    precision_recall_curve,
+    roc_curve,
+)
+from sklearn.pipeline import Pipeline as SkPipeline
+from sklearn.preprocessing import label_binarize
 
 from scripts.config import MODEL_ARTEFACTS_DIR
 from scripts.logging_config import get_logger
+from scripts.train_modules.evaluation import compute_metrics, log_confusion_matrix
+from scripts.utils import atomic_write_json, get_baseline_stats
+
+# Настройка matplotlib для работы без дисплея
+matplotlib.use("Agg")
 
 log = get_logger("postprocessing")
 
 
 def _save_confusion_and_report(y_true, y_pred, out_dir: Path) -> tuple[Path, Path]:
-    from scripts.train_modules.evaluation import log_confusion_matrix
-
+    """Сохраняет confusion matrix и classification report."""
     out_dir = Path(out_dir)
     cm_path = out_dir / "confusion_matrix_test.png"
     log_confusion_matrix(y_true, y_pred, cm_path)
@@ -43,7 +59,9 @@ def _save_confusion_and_report(y_true, y_pred, out_dir: Path) -> tuple[Path, Pat
     return cm_path, cr_path
 
 
-def _save_feature_importances(pipeline, out_dir: Path) -> Path | None:
+def _save_feature_importances_safe(pipeline, out_dir: Path) -> Path | None:
+    """Безопасное сохранение важности признаков."""
+    # Импорт здесь для избежания циклической зависимости
     from scripts.train import _extract_feature_importances
 
     try:
@@ -73,10 +91,7 @@ def _save_feature_importances(pipeline, out_dir: Path) -> Path | None:
 
 
 def _save_schema(pipeline, classes, x_train: pd.DataFrame, out_dir: Path) -> Path:
-    from sklearn.compose import ColumnTransformer
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.pipeline import Pipeline as SkPipeline
-
+    """Сохраняет схему модели (входные/выходные данные)."""
     schema: dict[str, Any] = {"input": {}, "output": {}}
     if hasattr(pipeline, "named_steps") and "pre" in pipeline.named_steps:
         pre: ColumnTransformer = pipeline.named_steps.get("pre")  # type: ignore
@@ -118,19 +133,8 @@ def _save_schema(pipeline, classes, x_train: pd.DataFrame, out_dir: Path) -> Pat
 def _save_roc_pr(
     pipeline, x_test: pd.DataFrame, y_test, out_dir: Path
 ) -> tuple[Path | None, Path | None]:
+    """Строит и сохраняет ROC и PR кривые."""
     try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from sklearn.metrics import (
-            auc,
-            average_precision_score,
-            precision_recall_curve,
-            roc_curve,
-        )
-        from sklearn.preprocessing import label_binarize
-
         if not hasattr(pipeline, "predict_proba"):
             return None, None
 
@@ -196,6 +200,7 @@ def _save_roc_pr(
 def _save_misclassified(
     x_test: pd.DataFrame, y_test, y_pred, out_dir: Path
 ) -> Path | None:
+    """Сохраняет примеры ошибок классификации."""
     try:
         mis_idx = np.where(y_pred != y_test)[0]
         if len(mis_idx) == 0:
@@ -232,8 +237,6 @@ def generate_best_bundle(
     out_dir = Path(artefacts_dir or MODEL_ARTEFACTS_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    from scripts.utils import atomic_write_json, get_baseline_stats
-
     baseline_stats = get_baseline_stats(x_train)
     baseline_path = out_dir / "baseline_numeric_stats.json"
     atomic_write_json(baseline_path, baseline_stats)
@@ -251,8 +254,6 @@ def generate_best_bundle(
 
     test_metrics: dict[str, Any] = {}
     if test_preds is not None:
-        from scripts.train_modules.evaluation import compute_metrics
-
         _save_confusion_and_report(y_test, test_preds, out_dir)
         test_metrics = compute_metrics(y_test, test_preds)
 
@@ -265,7 +266,7 @@ def generate_best_bundle(
         )
     )
     _save_schema(pipeline, classes, x_train, out_dir)
-    _save_feature_importances(pipeline, out_dir)
+    _save_feature_importances_safe(pipeline, out_dir)
 
     # 5) ROC/PR и ошибки
     if test_preds is not None:

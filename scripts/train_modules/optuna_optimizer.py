@@ -189,17 +189,17 @@ def optimize_model(
         timeout,
     )
 
+    def stop_on_interrupt(study: optuna.Study, trial: optuna.Trial) -> None:
+        """Callback для остановки оптимизации при получении сигнала."""
+        if _interrupted:
+            study.stop()
+
     try:
         study.optimize(
             objective_fn,
             n_trials=OPTUNA_N_TRIALS,
             timeout=timeout,
-            callbacks=[
-                lambda study, trial: (
-                    study.stop() if _interrupted else None,
-                    None,
-                )[1]
-            ],
+            callbacks=[stop_on_interrupt],
             show_progress_bar=False,
         )
     except KeyboardInterrupt:

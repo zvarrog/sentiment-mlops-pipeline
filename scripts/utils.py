@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from scripts.config import NUMERIC_COLS
+
 
 def get_baseline_stats(x_train: pd.DataFrame) -> dict[str, dict[str, float]]:
-    from scripts.config import NUMERIC_COLS
-
+    """Вычисляет базовые статистики (mean, std) для числовых колонок."""
     baseline_stats: dict[str, dict[str, float]] = {}
     for col in NUMERIC_COLS:
         if col not in x_train.columns:
@@ -23,6 +27,7 @@ def get_baseline_stats(x_train: pd.DataFrame) -> dict[str, dict[str, float]]:
 
 
 def to_bool(x: Any, default: bool = False) -> bool:
+    """Преобразует значение в булево."""
     if x is None:
         return bool(default)
     if isinstance(x, bool):
@@ -40,6 +45,7 @@ def to_bool(x: Any, default: bool = False) -> bool:
 
 
 def get_value(context: dict, name: str, default: str | None = None) -> str:
+    """Извлекает строковое значение из контекста Airflow (params, dag_run.conf, dag.params)."""
     params = context.get("params") or {}
     if name in params:
         return str(params.get(name))
@@ -53,6 +59,7 @@ def get_value(context: dict, name: str, default: str | None = None) -> str:
 
 
 def get_flag(context: dict, name: str, default: bool = False) -> bool:
+    """Извлекает булево значение из контекста Airflow."""
     params = context.get("params") or {}
     if name in params:
         return to_bool(params.get(name), default)
@@ -65,19 +72,29 @@ def get_flag(context: dict, name: str, default: bool = False) -> bool:
     return bool(default)
 
 
-def atomic_write_json(path, data: dict, **kwargs):
+def atomic_write_json(path: str | Path, data: dict, **kwargs: Any) -> None:
     """Атомарная запись JSON-файла через временный файл."""
-    import json
-    import os
-    from pathlib import Path
-
-    path = Path(path)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
+    path_obj = Path(path)
+    temp_path = path_obj.with_suffix(path_obj.suffix + ".tmp")
 
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=kwargs.get("indent", 2))
-        os.replace(temp_path, path)
+        os.replace(temp_path, path_obj)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+def atomic_write_parquet(path: str | Path, df: pd.DataFrame, **kwargs: Any) -> None:
+    """Атомарная запись Parquet-файла через временный файл."""
+    path_obj = Path(path)
+    temp_path = path_obj.with_suffix(path_obj.suffix + ".tmp")
+
+    try:
+        df.to_parquet(temp_path, **kwargs)
+        os.replace(temp_path, path_obj)
     except Exception:
         if temp_path.exists():
             temp_path.unlink()

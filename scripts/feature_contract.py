@@ -23,10 +23,15 @@ class FeatureContract:
     baseline_stats: dict[str, dict[str, float]] | None = None
 
     @classmethod
-    def from_model_artifacts(cls, model_artefact_dir: Path) -> "FeatureContract":
+    def from_model_artifacts(
+        cls,
+        model_artefact_dir: Path,
+        baseline_filename: str = "baseline_numeric_stats.json",
+        schema_filename: str = "model_schema.json",
+    ) -> "FeatureContract":
         """Строит контракт на основе baseline_numeric_stats.json и/или model_schema.json."""
-        baseline_path = model_artefact_dir / "baseline_numeric_stats.json"
-        schema_path = model_artefact_dir / "model_schema.json"
+        baseline_path = model_artefact_dir / baseline_filename
+        schema_path = model_artefact_dir / schema_filename
         baseline_stats: dict[str, dict[str, float]] | None = None
         expected_numeric: list[str] = []
 
@@ -44,7 +49,10 @@ class FeatureContract:
                 inp = schema.get("input", {}) if isinstance(schema, dict) else {}
                 used = inp.get("numeric_features") if isinstance(inp, dict) else None
                 if isinstance(used, list) and used:
-                    expected_numeric = [str(x) for x in used]
+                    # Если уже загрузили из baseline, объединяем (хотя они должны совпадать)
+                    expected_numeric = list(
+                        set(expected_numeric) | {str(x) for x in used}
+                    )
             except (OSError, json.JSONDecodeError):
                 pass
 
@@ -54,7 +62,7 @@ class FeatureContract:
                 f"{baseline_path.name} или {schema_path.name}"
             )
 
-        return cls([REQUIRED_TEXT_COL], expected_numeric, baseline_stats)
+        return cls([REQUIRED_TEXT_COL], sorted(expected_numeric), baseline_stats)
 
     def validate_input_data(
         self, data: dict[str, Any] | pd.DataFrame

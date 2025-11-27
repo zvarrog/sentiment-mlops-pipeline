@@ -21,7 +21,8 @@ from scripts.train_modules.evaluation import compute_metrics
 class TestDataLoading:
     """Тесты для scripts.train_modules.data_loading."""
 
-    def test_load_splits_returns_six_arrays(self, sample_parquet_files):
+    @pytest.mark.integration
+    def test_load_splits_returns_six_arrays(self, sample_parquet_files_small):
         """load_splits возвращает 6 объектов: X_train, X_val, X_test, y_train, y_val, y_test."""
         from scripts.train_modules.data_loading import load_splits
 
@@ -33,7 +34,8 @@ class TestDataLoading:
         assert len(x_val) > 0
         assert len(x_test) > 0
 
-    def test_load_splits_has_required_columns(self, sample_parquet_files):
+    @pytest.mark.integration
+    def test_load_splits_has_required_columns(self, sample_parquet_files_small):
         """X содержит reviewText и числовые признаки."""
         from scripts.train_modules.data_loading import load_splits
 
@@ -81,7 +83,8 @@ class TestFeatureSpace:
         assert len(NUMERIC_COLS) > 0
         assert all(isinstance(col, str) for col in NUMERIC_COLS)
 
-    def test_numeric_cols_are_numeric_type(self, sample_parquet_files):
+    @pytest.mark.integration
+    def test_numeric_cols_are_numeric_type(self, sample_parquet_files_small):
         """Все NUMERIC_COLS имеют числовой dtype после загрузки сплитов."""
         from scripts.train_modules.data_loading import load_splits
         from scripts.train_modules.feature_space import NUMERIC_COLS

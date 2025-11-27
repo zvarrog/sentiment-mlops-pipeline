@@ -55,9 +55,10 @@ def test_client(mock_model, mock_feature_contract, tmp_path_factory):
     tmp_model.write_bytes(b"fake")
 
     with (
-        patch("scripts.api_service.BEST_MODEL_PATH", tmp_model),
-        patch("scripts.api_service.joblib.load", return_value=mock_model),
-        patch("scripts.api_service.FeatureContract") as mock_contract_cls,
+        patch("scripts.config.BEST_MODEL_PATH", tmp_model),
+        patch("scripts.model_service.BEST_MODEL_PATH", tmp_model),
+        patch("scripts.model_service.joblib.load", return_value=mock_model),
+        patch("scripts.model_service.FeatureContract") as mock_contract_cls,
     ):
         mock_contract_cls.from_model_artifacts.return_value = mock_feature_contract
 
@@ -127,14 +128,14 @@ class TestAPIBatchPrediction:
     def test_batch_predict_with_empty_list(self, test_client):
         payload = {"data": []}
         resp = test_client.post("/batch_predict", json=payload)
-        assert resp.status_code == 400
+        # Pydantic min_length=1 возвращает 422 Unprocessable Entity
+        assert resp.status_code == 422
 
     def test_batch_predict_exceeds_limit(self, test_client):
         payload = {"data": [{"reviewText": "t"}] * 1001}
-        # Лимит реализован декоратором slowapi (50/minute), но в тесте просто проверим 200
-        # чтобы не зависеть от глобального состояния rate limiting.
+        # Pydantic max_length возвращает 422 Unprocessable Entity
         resp = test_client.post("/batch_predict", json=payload)
-        assert resp.status_code in (200, 429)
+        assert resp.status_code == 422
 
 
 class TestAPIMetrics:
