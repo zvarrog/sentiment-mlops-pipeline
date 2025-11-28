@@ -13,9 +13,9 @@ log = logging.getLogger("models")
 
 # Torch
 try:
-    import torch as _TORCH
+    import torch
 except ImportError:
-    _TORCH = None
+    torch = None
 
 
 def _select_device(preferred=None):
@@ -29,7 +29,7 @@ def _select_device(preferred=None):
     """
     if preferred in {"cpu", "cuda"}:
         return preferred
-    if _TORCH is not None and getattr(_TORCH.cuda, "is_available", lambda: False)():
+    if torch is not None and getattr(torch.cuda, "is_available", lambda: False)():
         return "cuda"
     return "cpu"
 
@@ -55,7 +55,7 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
         self._model = None
         self._device = device
         self._device_actual = None
-        if _TORCH is None:
+        if torch is None:
             log.warning(
                 "SimpleMLP: torch не установлен — модель будет недоступна при fit()"
             )
@@ -73,16 +73,16 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
         Raises:
             ImportError: Если torch не установлен
         """
-        if _TORCH is None:
+        if torch is None:
             raise ImportError("Для SimpleMLP требуется пакет torch. Установите torch.")
         from torch import nn
 
-        _TORCH.Generator().manual_seed(self.seed)
+        torch.Generator().manual_seed(self.seed)
         device_str = _select_device(self._device)
         if not SimpleMLP._device_logged_globally:
             log.info("SimpleMLP: обучение на устройстве %s", device_str)
             SimpleMLP._device_logged_globally = True
-        device = _TORCH.device(device_str)
+        device = torch.device(device_str)
 
         # Классы и индексация целевой переменной
         unique_labels = np.unique(y)
@@ -93,8 +93,8 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
         y_idx = np.vectorize(label2idx.get)(y).astype(int)
 
         # Данные на устройство
-        X_ = _TORCH.tensor(X.astype(np.float32), device=device)
-        y_ = _TORCH.tensor(y_idx, device=device)
+        X_ = torch.tensor(X.astype(np.float32), device=device)
+        y_ = torch.tensor(y_idx, device=device)
         in_dim = X_.shape[1]
         n_classes = len(unique_labels)
 
@@ -105,7 +105,7 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
             nn.Linear(self.hidden_dim, n_classes),
         )
         model.to(device)
-        opt = _TORCH.optim.Adam(model.parameters(), lr=self.lr)
+        opt = torch.optim.Adam(model.parameters(), lr=self.lr)
         loss_fn = nn.CrossEntropyLoss()
 
         # Обучение
@@ -139,11 +139,11 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
             RuntimeError: Если модель не обучена или torch недоступен
         """
         self._ensure_fitted()
-        if _TORCH is None:
+        if torch is None:
             raise RuntimeError("torch недоступен во время predict")
-        with _TORCH.no_grad():
-            device = getattr(self, "_device_actual", _TORCH.device("cpu"))
-            t = _TORCH.tensor(X.astype(np.float32), device=device)
+        with torch.no_grad():
+            device = getattr(self, "_device_actual", torch.device("cpu"))
+            t = torch.tensor(X.astype(np.float32), device=device)
             logits = self._model(t)
             pred_idx = logits.argmax(dim=1).cpu().numpy()
         return self._classes_[pred_idx]
@@ -151,13 +151,13 @@ class SimpleMLP(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         """Возвращает вероятности классов (softmax по логитам) в порядке self._classes_."""
         self._ensure_fitted()
-        if _TORCH is None:
+        if torch is None:
             raise RuntimeError("torch недоступен во время predict_proba")
-        with _TORCH.no_grad():
-            import torch.nn.functional as F  # локальный импорт, чтобы не тянуть в глобалы
+        with torch.no_grad():
+            import torch.nn.functional as F
 
-            device = getattr(self, "_device_actual", _TORCH.device("cpu"))
-            t = _TORCH.tensor(X.astype(np.float32), device=device)
+            device = getattr(self, "_device_actual", torch.device("cpu"))
+            t = torch.tensor(X.astype(np.float32), device=device)
             logits = self._model(t)
             probs = F.softmax(logits, dim=1).cpu().numpy()
         # Колонки уже соответствуют порядку self._classes_

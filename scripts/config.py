@@ -22,7 +22,6 @@ DEFAULT_DRIFT_ARTEFACTS_SUBDIR = "drift_artefacts"
 
 DEFAULT_KAGGLE_DATASET = "bharadwaj6/kindle-reviews"
 DEFAULT_CSV_NAME = "kindle_reviews.csv"
-DEFAULT_JSON_NAME = "kindle_reviews.json"
 
 BEST_MODEL_FILENAME = "best_model.joblib"
 BEST_MODEL_META_FILENAME = "best_model_meta.json"
@@ -50,7 +49,7 @@ if not os.environ.get("AIRFLOW_HOME"):
 
 def _getenv_bool(key: str, default: bool = False) -> bool:
     val = os.environ.get(key, "").strip().lower()
-    if val in ("1", "true", "yes", "on"):
+    if val in ("1", "true", "yes"):
         return True
     if val in ("0", "false", "no", "off", ""):
         return default if val == "" else False
@@ -94,7 +93,6 @@ BASELINE_NUMERIC_STATS_PATH = MODEL_ARTEFACTS_DIR / BASELINE_NUMERIC_STATS_FILEN
 # Датасет
 KAGGLE_DATASET = os.environ.get("KAGGLE_DATASET", DEFAULT_KAGGLE_DATASET)
 CSV_NAME = os.environ.get("CSV_NAME", DEFAULT_CSV_NAME)
-JSON_NAME = os.environ.get("JSON_NAME", DEFAULT_JSON_NAME)
 
 # Флаги
 FORCE_DOWNLOAD = _getenv_bool("FORCE_DOWNLOAD", False)
@@ -112,7 +110,17 @@ MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
 
 # Лимит сэмплирования на класс для балансировки датасета (компромисс между
 # скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
-PER_CLASS_LIMIT = 100  # _getenv_int("PER_CLASS_LIMIT", 35000)
+PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 35000)
+
+
+def _getenv_set(key: str, default: str = "") -> set[str]:
+    """Парсит по запятым строку из env в set."""
+    val = os.environ.get(key, default)
+    return {c.strip() for c in val.split(",") if c.strip()}
+
+
+# Дрейф: колонки для игнорирования при расчёте PSI
+DRIFT_IGNORE_COLS = _getenv_set("DRIFT_IGNORE_COLS", "")
 
 # Размер словаря TF-IDF — кратный 1024 для выравнивания в памяти
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
@@ -126,9 +134,9 @@ TFIDF_MAX_FEATURES_MAX = _getenv_int("TFIDF_MAX_FEATURES_MAX", 6000)
 TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
 
 # Обучение
-OPTUNA_N_TRIALS = 3  # _getenv_int(
-# "OPTUNA_N_TRIALS", 30
-# )  # Компромисс между качеством оптимизации и временем
+OPTUNA_N_TRIALS = _getenv_int(
+    "OPTUNA_N_TRIALS", 30
+)  # Компромисс между качеством оптимизации и временем
 OPTUNA_STORAGE = os.environ.get(
     "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
 )
@@ -149,15 +157,16 @@ DISTILBERT_MAX_EPOCHS = _getenv_int("DISTILBERT_MAX_EPOCHS", 8)
 SELECTED_MODEL_KINDS = [
     ModelKind.logreg,
     ModelKind.rf,
-    # ModelKind.hist_gb,
+    ModelKind.hist_gb,
     ModelKind.mlp,
     # ModelKind.distilbert,
 ]
 
 # MLflow
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "kindle_reviews")
-MODEL_PRODUCTION_THRESHOLD = 0.75
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI") or "http://mlflow:5000"
+MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME") or "kindle_reviews"
+MLFLOW_KEEP_LATEST = _getenv_int("MLFLOW_KEEP_LATEST", 3)
+MODEL_PRODUCTION_THRESHOLD = _getenv_float("MODEL_PRODUCTION_THRESHOLD", 0.75)
 
 # Spark ресурсы
 SPARK_DRIVER_MEMORY = os.environ.get("SPARK_DRIVER_MEMORY", "6g")
@@ -175,8 +184,14 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
 LOG_INCLUDE_TIMESTAMP = _getenv_bool("LOG_INCLUDE_TIMESTAMP", True)
 
+# API
+API_HOST = os.environ.get("API_HOST", "127.0.0.1")
+API_PORT = _getenv_int("API_PORT", 8000)
+MAX_TEXT_LENGTH = 2000
+MAX_BATCH_SIZE = 100
 
-@dataclass(frozen=True)
+
+@dataclass
 class DataPaths:
     train: Path = PROCESSED_DATA_DIR / "train.parquet"
     val: Path = PROCESSED_DATA_DIR / "val.parquet"

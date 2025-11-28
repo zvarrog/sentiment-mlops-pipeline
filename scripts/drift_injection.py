@@ -4,8 +4,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.config import DATA_PATHS, INJECT_SYNTHETIC_DRIFT
+# Опциональный импорт pyarrow, так как он может быть не установлен
+try:
+    import pyarrow.dataset as ds
+except ImportError:
+    ds = None
+
+from scripts.config import DATA_PATHS, INJECT_SYNTHETIC_DRIFT, NUMERIC_COLS
 from scripts.logging_config import get_logger
+from scripts.utils import atomic_write_parquet
 
 log = get_logger("drift_injection")
 
@@ -70,14 +77,14 @@ def inject_synthetic_drift(
 
 def _load_parquet_data(test_path: Path) -> pd.DataFrame:
     """Загружает данные из parquet файла или директории."""
-    try:
-        import pyarrow.dataset as ds
-
-        dataset = ds.dataset(str(test_path))
-        table = dataset.to_table()
-        return table.to_pandas()
-    except Exception:
-        return pd.read_parquet(test_path)
+    if ds is not None:
+        try:
+            dataset = ds.dataset(str(test_path))
+            table = dataset.to_table()
+            return table.to_pandas()
+        except Exception:
+            pass
+    return pd.read_parquet(test_path)
 
 
 def _apply_synthetic_drift(df: pd.DataFrame) -> list[str]:
@@ -89,44 +96,39 @@ def _apply_synthetic_drift(df: pd.DataFrame) -> list[str]:
     Returns:
         list: Список изменённых колонок
     """
-    # Список кандидатов для инъекции дрейфа
-    candidate_columns = [
-        "text_len",
-        "word_count",
-        "kindle_freq",
-        "sentiment",
-    ]
+    # Используем числовые колонки из конфига как кандидатов
+    candidate_columns = NUMERIC_COLS
 
     changed_columns = []
 
     for col in candidate_columns:
         if col in df.columns:
             try:
+                # Убеждаемся, что колонка числовая
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
 
                 # Дрейф, чтобы PSI превысил порог (>0.2)
+                # Сдвиг среднего + масштабирование
                 df[col] = df[col] * 1.5 + 10.0
 
                 changed_columns.append(col)
-                log.debug(f"Применён дрейф к колонке '{col}'")
+                log.debug("Применён дрейф к колонке '%s'", col)
 
             except Exception as e:
-                log.warning(f"Не удалось применить дрейф к колонке '{col}': {e}")
+                log.warning("Не удалось применить дрейф к колонке '%s': %s", col, e)
 
     return changed_columns
 
 
 def _save_modified_data(df: pd.DataFrame, original_path: Path) -> None:
     """Атомарно заменяет оригинальные данные модифицированными."""
-    from scripts.utils import atomic_write_parquet
-
     atomic_write_parquet(original_path, df)
 
 
 def main() -> dict[str, str | list[str]]:
     """Главная функция для запуска инъекции дрейфа из командной строки или DAG."""
     result = inject_synthetic_drift()
-    log.info(f"Результат инъекции: {result['status']} - {result['message']}")
+    log.info("Результат инъекции: %s - %s", result["status"], result["message"])
     return result
 
 

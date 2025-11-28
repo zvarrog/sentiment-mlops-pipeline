@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 import pandas as pd
 
 REQUIRED_TEXT_COL = "reviewText"
@@ -22,10 +23,15 @@ class FeatureContract:
     baseline_stats: dict[str, dict[str, float]] | None = None
 
     @classmethod
-    def from_model_artifacts(cls, model_artefact_dir: Path) -> "FeatureContract":
+    def from_model_artifacts(
+        cls,
+        model_artefact_dir: Path,
+        baseline_filename: str = "baseline_numeric_stats.json",
+        schema_filename: str = "model_schema.json",
+    ) -> "FeatureContract":
         """Строит контракт на основе baseline_numeric_stats.json и/или model_schema.json."""
-        baseline_path = model_artefact_dir / "baseline_numeric_stats.json"
-        schema_path = model_artefact_dir / "model_schema.json"
+        baseline_path = model_artefact_dir / baseline_filename
+        schema_path = model_artefact_dir / schema_filename
         baseline_stats: dict[str, dict[str, float]] | None = None
         expected_numeric: list[str] = []
 
@@ -43,7 +49,10 @@ class FeatureContract:
                 inp = schema.get("input", {}) if isinstance(schema, dict) else {}
                 used = inp.get("numeric_features") if isinstance(inp, dict) else None
                 if isinstance(used, list) and used:
-                    expected_numeric = [str(x) for x in used]
+                    # Если уже загрузили из baseline, объединяем (хотя они должны совпадать)
+                    expected_numeric = list(
+                        set(expected_numeric) | {str(x) for x in used}
+                    )
             except (OSError, json.JSONDecodeError):
                 pass
 
@@ -53,9 +62,11 @@ class FeatureContract:
                 f"{baseline_path.name} или {schema_path.name}"
             )
 
-        return cls([REQUIRED_TEXT_COL], expected_numeric, baseline_stats)
+        return cls([REQUIRED_TEXT_COL], sorted(expected_numeric), baseline_stats)
 
-    def validate_input_data(self, data: dict[str, Any] | pd.DataFrame) -> dict[str, list[str]]:
+    def validate_input_data(
+        self, data: dict[str, Any] | pd.DataFrame
+    ) -> dict[str, list[str]]:
         """Возвращает словарь предупреждений по входным данным."""
         if isinstance(data, pd.DataFrame):
             data = {c: data[c].tolist() for c in data.columns}
@@ -85,7 +96,10 @@ class FeatureContract:
                 std = baseline.get("std", 1.0)
                 if std > 0:
                     for i, v in enumerate(values):
-                        if isinstance(v, (int, float)) and abs(v - mean) > OUTLIER_SIGMAS * std:
+                        if (
+                            isinstance(v, (int, float))
+                            and abs(v - mean) > OUTLIER_SIGMAS * std
+                        ):
                             outliers.append(
                                 f"{col}[{i}]: {v} (≈{mean:.2f}±{OUTLIER_SIGMAS * std:.2f})"
                             )

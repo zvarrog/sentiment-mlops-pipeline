@@ -1,534 +1,114 @@
-# Sentiment MLOps Pipeline
+# Sentiment Analysis MLOps Pipeline
 
-Production-ready MLOps пайплайн для sentiment analysis отзывов на Kindle книги. Реализует полный цикл: загрузка данных → валидация → обработка → HPO → обучение → мониторинг дрифта → API inference.
+Проект представляет собой end-to-end MLOps решение для классификации тональности отзывов (Kindle Reviews).
+Основной фокус: построение масштабируемого пайплайна обучения (Spark) и высокопроизводительного сервиса инференса (FastAPI/Pandas) с мониторингом дрифта данных.
 
-> 📋 **Улучшения**: См. [IMPROVEMENTS.md](IMPROVEMENTS.md) для деталей последних улучшений
+## 🏗 Архитектура
 
-## Архитектура
+Проект разделен на два независимых контура: **Training (Batch)** и **Inference (Real-time)**.
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Airflow    │────▶│   Spark      │────▶│   Optuna     │
-│  Orchestr.   │     │  Processing  │     │     HPO      │
-└──────────────┘     └──────────────┘     └──────────────┘
-       │                                          │
-       │                                          ▼
-       │                                   ┌──────────────┐
-       │                                   │    MLflow    │
-       │                                   │   Tracking   │
-       │                                   └──────────────┘
-       ▼                                          │
-┌──────────────┐                                  │
-│ PostgreSQL   │◀─────────────────────────────────┘
-│   Metrics    │
-└──────────────┘     ┌──────────────┐     ┌──────────────┐
-       ▲             │   FastAPI    │────▶│ Prometheus   │
-       │             │   Serving    │     │   Metrics    │
-       │             └──────────────┘     └──────┬───────┘
-       │                    │                     │
-       └────────────────────┘                     ▼
-                                           ┌──────────────┐
-                                           │   Grafana    │
-                                           │  Dashboards  │
-                                           └──────────────┘
-```
+### Training Pipeline (Airflow + Spark)
 
-## Возможности
+Обработка больших объемов исторических данных.
 
-### ML Pipeline
+1. **Ingestion**: Загрузка сырых данных (CSV/Parquet).
+2. **Processing (Spark)**:
+    * Очистка текста и балансировка классов.
+    * Генерация признаков (TF-IDF + статистические фичи).
+    * *Особенность*: Используется Spark для горизонтального масштабирования ETL.
+3. **Training**: Параллельное обучение нескольких моделей (Sklearn, LightGBM) через `joblib`.
+4. **Evaluation**: Выбор лучшей модели по метрикам (F1-score, Latency) и регистрация в MLflow.
 
-- **Обучение моделей**: LogisticRegression, RandomForest, HistGradientBoosting, MLP, DistilBERT
-- **HPO**: Optuna с многокритериальной оптимизацией (accuracy, latency, complexity)
-- **Feature engineering**: TF-IDF + TruncatedSVD + числовые признаки (text_len, word_count, etc.)
-- **Валидация**: строгая проверка схемы данных, детекция аномалий
+### Inference Service (FastAPI)
 
-### MLOps Features
+Легковесный сервис для обработки запросов в реальном времени.
 
-- **Orchestration**: Airflow с Dynamic Task Mapping для параллельного обучения
-- **Experiment tracking**: MLflow для версионирования моделей и метрик
-- **Monitoring**: drift detection через PSI, автоматический ретрейнинг при дрифте
-- **API serving**: FastAPI с /predict и /batch_predict эндпоинтами
-- **Observability**: Prometheus metrics + Grafana dashboards + structured logging
+* **Stack**: FastAPI + Pandas + Joblib.
+* **Feature Engineering**: Реализован на Pandas для минимизации оверхеда (Spark context слишком тяжел для RT API).
+* **Monitoring**: Prometheus (технические метрики) + Custom Drift Monitor (PSI).
 
-### Data Processing
+## 🛠 Ключевые технические решения
 
-- **Spark**: распределённая обработка больших датасетов
-- **Validation**: контракты данных, проверка качества
-- **Drift injection**: синтетический дрифт для тестирования мониторинга
+### 1. Hybrid Feature Engineering (Spark vs Pandas)
 
-## Быстрый старт
+Для обучения используется Spark, для инференса — Pandas.
+**Проблема**: Риск Training-Serving Skew (расхождение логики признаков).
+**Решение**:
 
-### Предварительные требования
+* Логика генерации признаков унифицирована в модуле `scripts/feature_engineering.py`.
+* Spark вызывает эту логику через UDF.
+* API вызывает её напрямую.
+* Написаны интеграционные тесты (`tests/test_feature_consistency.py`), гарантирующие идентичность результатов.
 
-- Docker + Docker Compose
-- Python 3.10+
-- 8GB RAM минимум
+### 2. "Raw" vs "Clean" Features
 
-### Локальный запуск
+Мы извлекаем признаки на двух этапах:
+
+1. **По сырому тексту**: `caps_ratio`, `exclamation_count`, `question_count` (важны для эмоций).
+2. **По очищенному тексту**: TF-IDF, Word Count (важны для семантики).
+*Ранее был баг, когда все признаки считались по очищенному тексту (где удалена пунктуация и регистр), что обнуляло важные сигналы. Исправлено.*
+
+### 3. Drift Monitoring
+
+Реализован расчет Population Stability Index (PSI) для числовых признаков.
+
+* При обучении сохраняются эталонные распределения (квантили).
+* В продакшене накапливаются батчи данных и сверяются с эталоном.
+* При PSI > 0.2 триггерится алерт (и потенциально ретрейнинг).
+
+## 🚀 Запуск
+
+### Требования
+
+* Docker & Docker Compose
+* 8GB+ RAM (Spark требует памяти)
+
+### Быстрый старт
 
 ```bash
-# Клонирование репозитория
-git clone <repo_url>
-cd sentiment-mlops-pipeline
+# 1. Запуск инфраструктуры
+docker-compose up -d --build
 
-# Создание секретов
-mkdir -p secrets
-echo "your_secure_password" > secrets/postgres_password.txt
-
-# Запуск всех сервисов
-docker-compose up -d
-
-# Проверка статуса
+# 2. Проверка статуса
 docker-compose ps
+
+# 3. Доступ к сервисам:
+# - Airflow: http://localhost:8080 (admin/admin)
+# - MLflow: http://localhost:5000
+# - API: http://localhost:8000/docs
+# - Grafana: http://localhost:3000 (admin/admin)
 ```
 
-Сервисы будут доступны:
-
-- **Airflow UI**: http://localhost:8080 (admin/admin)
-- **MLflow UI**: http://localhost:5000
-- **FastAPI**: http://localhost:8000
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000 (admin/admin)
-
-### Запуск пайплайна
+### Тестирование
 
 ```bash
-# Через Airflow UI: выберите DAG "kindle_unified_pipeline"
-# Или через CLI:
-docker exec airflow-webserver airflow dags trigger kindle_unified_pipeline
+# Запуск unit и integration тестов
+pytest tests/
+
+# Проверка консистентности признаков
+pytest tests/test_feature_consistency.py
 ```
 
-DAG автоматически:
+## ⚠️ Known Issues & Roadmap (TODO)
 
-1. Загружает данные Kindle отзывов
-2. Обрабатывает через Spark
-3. Обучает модели параллельно (на основе `SELECTED_MODEL_KINDS`)
-4. Выбирает лучшую по F1-score
-5. Логирует метрики в MLflow + PostgreSQL
+Честный список того, что еще предстоит сделать для Production-grade состояния:
 
-Подробности: [airflow/dags/README_UNIFIED_DAG.md](airflow/dags/README_UNIFIED_DAG.md)
-
-### API инференс
-
-```bash
-# Single prediction
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "reviewText": "Great book, highly recommend!",
-    "text_len": 30.0,
-    "word_count": 5.0
-  }'
-
-# Batch prediction
-python scripts/request_batch.py --samples 100
-```
-
-## Мониторинг и SLO
-
-### Service Level Objectives (SLO)
-
-Целевые показатели для production-системы:
-
-| Метрика               | SLO Target | Метод измерения                                         |
-| --------------------- | ---------- | ------------------------------------------------------- |
-| **API Latency (p95)** | < 500ms    | Prometheus histogram `api_request_duration_seconds`     |
-| **API Latency (p99)** | < 1000ms   | Prometheus histogram `api_request_duration_seconds`     |
-| **API Availability**  | > 99.5%    | Uptime = (1 - error_rate) \* 100%                       |
-| **Error Rate**        | < 1%       | `api_errors_total / api_request_duration_seconds_count` |
-| **Drift Detection**   | PSI < 0.1  | Population Stability Index для числовых признаков       |
-| **Model F1 Score**    | > 0.85     | Валидационная метрика при обучении                      |
-
-### Grafana Dashboards
-
-Автоматически настроены дашборды (http://localhost:3000):
-
-**API SLO Dashboard** (`sentiment-api-slo`):
-
-- 📊 Latency перцентили (p50/p95/p99) по эндпоинтам
-- 📈 Throughput (запросов/сек)
-- ⚠️ Error Rate с детализацией по типам ошибок
-- 📦 Размеры запросов/ответов (p95)
-- 🎯 Gauge-метрики: p99 latency, error rate, throughput
-
-**Alerting Rules**:
-
-- Error rate > 5% → критичный алерт
-- p99 latency > 1s → предупреждение
-- Drift PSI > 0.1 → автоматический ретрейнинг (см. `drift_retraining_dag`)
-
-### Метрики API
-
-Prometheus собирает следующие метрики:
-
-```promql
-# Latency по перцентилям
-histogram_quantile(0.95, rate(api_request_duration_seconds_bucket[5m]))
-
-# Throughput (запросов/сек)
-rate(api_request_duration_seconds_count[1m])
-
-# Error rate
-rate(api_errors_total[5m]) / rate(api_request_duration_seconds_count[5m])
-
-# Размер запросов
-histogram_quantile(0.95, rate(api_request_size_bytes_bucket[5m]))
-```
-
-### Drift Monitoring
-
-Мониторинг дрифта работает автоматически:
-
-1. **drift_monitor.py** вычисляет PSI для каждого признака
-2. При PSI > 0.1 записывается `artefacts/drift_artefacts/drift_report.csv`
-3. **drift_retraining_dag** отслеживает файл через FileSensor
-4. При появлении дрифта триггерится автоматический ретрейнинг
-
-### Логи
-
-Структурированное логирование (JSON format поддерживается):
-
-```bash
-# Просмотр логов Airflow
-docker logs airflow-webserver --tail 100 -f
-
-# Логи API
-docker logs api-service --tail 100 -f
-
-# Включить JSON формат через переменную окружения
-LOG_FORMAT=json docker-compose up -d
-```
+1. **Config Management**: Сейчас часть параметров (например, лимиты классов) захардкожены в `config.py` или `spark_process.py`. Нужно вынести всё в `.env` или Hydra.
+2. **CI/CD**: Настроен только линтинг. Нужен полноценный пайплайн с прогоном тестов и сборкой Docker-образов.
+3. **Spark Optimization**: Текущая конфигурация Spark (local mode) не оптимизирована под кластер.
+4. **Security**: Секреты (пароли БД) передаются через env-файлы, для продакшена нужен Vault.
 
 ## Структура проекта
 
 ```
-.
-├── airflow/
-│   └── dags/
-│       ├── kindle_pipeline.py           # Основной unified DAG
-│       ├── drift_retraining_dag.py      # Автоматический ретрейнинг
-│       └── README_UNIFIED_DAG.md
+├── airflow/dags/       # DAGs для оркестрации
 ├── scripts/
-│   ├── config.py                        # Централизованная конфигурация (SSoT)
-│   ├── settings.py                      # Адаптер для обратной совместимости
-│   ├── train.py                         # Основной скрипт обучения
-│   ├── api_service.py                   # FastAPI сервис
-│   ├── drift_monitor.py                 # Мониторинг дрифта
-│   ├── data_validation.py               # Валидация данных
-│   ├── feature_contract.py              # Контракт признаков
-│   ├── logging_config.py                # Конфигурация логирования
-│   └── train_modules/
-│       ├── data_loading.py
-│       ├── feature_space.py
-│       ├── models.py
-│       └── text_analyzers.py
-├── tests/
-│   ├── test_core_modules.py             # Тесты ключевых модулей
-│   ├── test_api_service.py              # Тесты API
-│   └── conftest.py
-├── grafana/
-│   ├── provisioning/                    # Автоконфигурация Grafana
-│   │   ├── datasources/
-│   │   │   └── prometheus.yml
-│   │   └── dashboards/
-│   │       └── default.yml
-│   └── dashboards/
-│       └── api_slo.json                 # SLO dashboard
-├── artefacts/                           # Модели и метрики
-├── postgres-init/                       # SQL инициализация
-├── .github/workflows/
-│   └── lint.yml                         # CI с Ruff
-├── .ruff.toml                           # Конфигурация линтера
-├── docker-compose.yml
-└── README.md
-```
-
-## Разработка
-
-### Установка зависимостей
-
-```bash
-# Основные зависимости
-pip install -r requirements.txt
-
-# Зависимости для API
-pip install -r requirements.api.txt
-
-# Зависимости для разработки
-pip install -r requirements.dev.txt
-```
-
-### Запуск тестов
-
-```bash
-# Все тесты
-pytest tests/ -v
-
-# С покрытием
-pytest tests/ --cov=scripts --cov-report=html
-
-# Конкретный модуль
-pytest tests/test_core_modules.py -v
-```
-
-Подробности: [tests/README.md](tests/README.md)
-
-### Линтинг и форматирование
-
-```bash
-# Проверка кода
-ruff check .
-
-# Автоисправление
-ruff check --fix .
-
-# Проверка форматирования
-ruff format --check .
-
-# Форматирование
-ruff format .
-```
-
-CI автоматически проверяет код через GitHub Actions (`.github/workflows/lint.yml`).
-
-### Переменные окружения
-
-Ключевые переменные (см. `scripts/config.py`):
-
-```bash
-# Директории данных
-RAW_DATA_DIR=/data/raw
-PROCESSED_DATA_DIR=/data/processed
-MODEL_DIR=/artefacts
-
-# MLflow
-MLFLOW_TRACKING_URI=http://mlflow:5000
-
-# PostgreSQL
-POSTGRES_USER=admin
-POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password  # через Docker secrets
-POSTGRES_METRICS_URI=postgresql://admin:***@postgres:5432/metrics
-
-# Optuna
-OPTUNA_STORAGE=postgresql+psycopg2://admin:***@postgres:5432/optuna
-
-# Логирование
-LOG_LEVEL=INFO
-LOG_FORMAT=text  # или json
-```
-
-## Troubleshooting
-
-### Проблема: Airflow DAG не появляется в UI
-
-```bash
-# Проверка синтаксиса DAG
-python -m py_compile airflow/dags/kindle_pipeline.py
-
-# Перезапуск scheduler
-docker restart airflow-scheduler
-
-# Проверка логов
-docker logs airflow-scheduler --tail 50
-```
-
-### Проблема: API возвращает 500 при предсказании
-
-Проверка наличия модели:
-
-```bash
-docker exec api-service ls -lh /app/artefacts/best_model.joblib
-```
-
-Если модель отсутствует — запустите DAG для обучения.
-
-### Проблема: Grafana дашборд не загружается
-
-```bash
-# Проверка provisioning
-docker exec grafana ls -la /etc/grafana/provisioning/datasources/
-docker exec grafana ls -la /etc/grafana/provisioning/dashboards/
-
-# Перезапуск Grafana
-docker restart grafana
-
-# Проверка подключения к Prometheus
-docker exec grafana wget -O- http://prometheus:9090/-/healthy
-```
-
-### Проблема: PostgreSQL метрики не сохраняются
-
-Проверка подключения:
-
-```bash
-docker exec airflow-webserver python -c "
-from scripts.config import settings
-from sqlalchemy import create_engine
-engine = create_engine(settings.postgres_metrics_uri)
-with engine.connect() as conn:
-    print(conn.execute('SELECT version()').fetchone())
-"
-```
-
-## CI/CD
-
-Настроен GitHub Actions pipeline (`.github/workflows/lint.yml`):
-
-- **Lint**: Ruff проверка кода + форматирования
-- **Auto-trigger**: на push в master/main/develop и PR
-
-Локальный запуск CI проверок:
-
-```bash
-# Lint (как в CI)
-ruff check .
-ruff format --check .
-
-# Tests
-pytest tests/ -v
-
-# DAG validation
-python -m py_compile airflow/dags/kindle_pipeline.py
-python -m py_compile airflow/dags/drift_retraining_dag.py
-```
-
-## Streamlit Demo
-
-Интерактивное демо для визуализации и инференса:
-
-```bash
-# Запуск
-streamlit run streamlit_app.py
-
-# Откроется http://localhost:8501
-```
-
-Возможности:
-
-- 💬 Real-time inference через API
-- 📈 Визуализация метрик модели
-- 🔍 Мониторинг дрифта с графиками
-- ℹ️ Информация о модели и гиперпараметрах
-
-## Roadmap
-
-- [x] Dynamic Task Mapping для параллельного обучения
-- [x] Автоматический ретрейнинг при дрифте
-- [x] Grafana dashboards с SLO метриками
-- [x] CI с Ruff линтингом
-- [ ] MLflow Model Registry интеграция
-- [ ] A/B тестирование моделей
-- [ ] Advanced drift: multivariate, text embeddings
-- [ ] Model serving через Kubernetes
-
-## Лицензия
-
-MIT
-
-## Контакты
-
-Для вопросов и предложений: [ваш email]
-
-```
-sentiment-mlops-pipeline
-├─ .dockerignore
-├─ .env
-├─ .ruff.toml
-├─ airflow
-│  └─ dags
-│     └─ kindle_pipeline.py
-├─ artefacts
-│  ├─ best_model.joblib
-│  ├─ drift_artefacts
-│  │  ├─ drift_report.csv
-│  │  ├─ drift_report.json
-│  │  └─ plots
-│  │     ├─ avg_word_length_hist.png
-│  │     ├─ caps_ratio_hist.png
-│  │     ├─ exclamation_count_hist.png
-│  │     ├─ item_avg_len_hist.png
-│  │     ├─ item_review_count_hist.png
-│  │     ├─ kindle_freq_hist.png
-│  │     ├─ question_count_hist.png
-│  │     ├─ sentiment_hist.png
-│  │     ├─ text_len_hist.png
-│  │     ├─ user_avg_len_hist.png
-│  │     ├─ user_review_count_hist.png
-│  │     └─ word_count_hist.png
-│  └─ model_artefacts
-│     ├─ baseline_numeric_stats.json
-│     ├─ best_model_meta.json
-│     ├─ classification_report_test.txt
-│     ├─ confusion_matrix_test.png
-│     ├─ feature_importances.json
-│     ├─ meta_hist_gb.json
-│     ├─ meta_logreg.json
-│     ├─ meta_mlp.json
-│     ├─ meta_rf.json
-│     ├─ misclassified_samples_test.csv
-│     ├─ model_hist_gb.joblib
-│     ├─ model_logreg.joblib
-│     ├─ model_mlp.joblib
-│     ├─ model_rf.joblib
-│     ├─ model_schema.json
-│     ├─ optuna_top_trials.csv
-│     ├─ pr_curve_test.png
-│     └─ roc_curve_test.png
-├─ docker-compose.yml
-├─ Dockerfile.airflow
-├─ Dockerfile.api
-├─ examples
-│  ├─ request_batch.py
-│  └─ request_simple.py
-├─ grafana
-│  └─ provisioning
-│     ├─ dashboards
-│     │  ├─ api_slo.json
-│     │  └─ default.yml
-│     └─ datasources
-│        └─ prometheus.yml
-├─ postgres-init
-│  ├─ 00-init-multiple-databases.sh
-│  ├─ 01-init-airflow-meta.sql
-│  └─ 02-init-metrics-db.sql
-├─ prometheus.yml
-├─ README.md
-├─ requirements.api.txt
-├─ requirements.txt
-├─ scripts
-│  ├─ api_service.py
-│  ├─ config.py
-│  ├─ constants.py
-│  ├─ data_validation.py
-│  ├─ download.py
-│  ├─ drift_injection.py
-│  ├─ drift_monitor.py
-│  ├─ feature_contract.py
-│  ├─ logging_config.py
-│  ├─ models
-│  │  ├─ distilbert.py
-│  │  └─ kinds.py
-│  ├─ model_registry.py
-│  ├─ postprocessing.py
-│  ├─ spark_process.py
-│  ├─ text_features.py
-│  ├─ train.py
-│  ├─ train_modules
-│  │  ├─ data_loading.py
-│  │  ├─ evaluation.py
-│  │  ├─ feature_space.py
-│  │  ├─ models.py
-│  │  ├─ pipeline_builders.py
-│  │  ├─ text_analyzers.py
-│  │  └─ __init__.py
-│  ├─ utils.py
-│  └─ __init__.py
-└─ tests
-   ├─ conftest.py
-   ├─ requirements.txt
-   ├─ test_api_service.py
-   ├─ test_core_modules.py
-   ├─ test_edge_cases.py
-   └─ test_integration.py
-
+│   ├── api_service.py          # FastAPI app
+│   ├── spark_process.py        # ETL logic (Spark)
+│   ├── feature_engineering.py  # Shared feature logic (Core!)
+│   ├── train.py                # Training script
+│   └── drift_monitor.py        # Drift detection
+├── tests/              # Pytest tests
+├── docker-compose.yml  # Infra definition
+└── README.md           # This file
 ```

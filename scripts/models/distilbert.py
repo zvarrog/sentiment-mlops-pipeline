@@ -1,7 +1,11 @@
+import logging
+
 import numpy as np
 import torch
 from sklearn.base import BaseEstimator, ClassifierMixin
 from transformers import AutoModel, AutoTokenizer
+
+log = logging.getLogger(__name__)
 
 
 class DistilBertClassifier(BaseEstimator, ClassifierMixin):
@@ -30,6 +34,8 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         self._classes_ = None
 
     def _tokenize(self, texts, return_tensors: str = "pt"):
+        if self._tokenizer is None:
+            raise RuntimeError("Токенизатор не инициализирован")
         return self._tokenizer(
             list(texts),
             truncation=True,
@@ -61,14 +67,11 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         # Автовыбор устройства
         device_str = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        import logging
-
-        log = logging.getLogger(__name__)
-        log.info(f"DistilBERT training on device: {device_str}")
+        log.info("DistilBERT training on device: %s", device_str)
 
         # Валидация устройства
         if device_str not in ["cpu", "cuda"] and not device_str.startswith("cuda:"):
-            log.warning(f"Invalid device '{device_str}', falling back to 'cpu'")
+            log.warning(f"Недопустимое устройство '{device_str}', возвращаемся к 'cpu'")
             device_str = "cpu"
 
         device = torch.device(device_str)
@@ -117,6 +120,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 with torch.no_grad():
                     out = self._base_model(**enc)
                     cls = out.last_hidden_state[:, 0]
+                # накопление градиентов
                 logits = self._head(cls)
                 loss = loss_fn(
                     logits, torch.tensor(by, dtype=torch.long, device=device)
@@ -153,16 +157,14 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                     f"Epoch {epoch + 1}/{self.epochs}: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}"
                 )
 
-                # Early stopping
+                # ранняя остановка
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     patience_counter = 0
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
-                        log.info(
-                            f"Early stopping: no improvement for {patience} epochs"
-                        )
+                        log.info(f"ранняя остановка: нет улучшения за {patience} эпох")
                         break
             else:
                 log.info(
@@ -175,7 +177,12 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         return self
 
     def predict(self, x):
-        if not self._fitted:
+        if (
+            not self._fitted
+            or self._base_model is None
+            or self._head is None
+            or self._tokenizer is None
+        ):
             raise RuntimeError("DistilBertClassifier не обучен")
         texts = x if isinstance(x, (list, np.ndarray)) else x.values
         preds = []
@@ -193,7 +200,12 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         return self._classes_[preds]
 
     def predict_proba(self, x):
-        if not self._fitted:
+        if (
+            not self._fitted
+            or self._base_model is None
+            or self._head is None
+            or self._tokenizer is None
+        ):
             raise RuntimeError("DistilBertClassifier не обучен")
         import torch.nn.functional as func
 

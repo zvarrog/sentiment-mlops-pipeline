@@ -1,13 +1,15 @@
 """Валидация схемы и качества данных в parquet файлах."""
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
-# Используем централизованную систему логирования
-from .logging_config import get_logger
+from scripts.config import PROCESSED_DATA_DIR
+from scripts.logging_config import get_logger, setup_auto_logging
 
 log = get_logger(__name__)
 
@@ -28,7 +30,7 @@ class DataSchema:
 
     required_columns: set[str]
     optional_columns: set[str]
-    column_types: dict[str, str]  # колонка -> ожидаемый тип
+    column_types: dict[str, str | list[str]]  # колонка -> ожидаемый тип
     numeric_ranges: dict[str, tuple]  # числовая колонка -> (min, max)
     text_constraints: dict[str, dict[str, Any]]  # текстовая колонка -> ограничения
 
@@ -40,7 +42,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len",
         "word_count",
         "kindle_freq",
-        "sentiment_score",
+        "sentiment",
         "has_punctuation",
         "avg_word_length",
         "upper_ratio",
@@ -50,7 +52,6 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "unixReviewTime",
         "asin",
         "reviewerID",
-        "sentiment",
         "words",
         "user_review_count",
         "item_review_count",
@@ -74,7 +75,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len": ["float32"],
         "word_count": ["float32"],
         "kindle_freq": ["float32"],
-        "sentiment_score": ["float64", "int32"],
+        "sentiment": ["float64", "float32"],
         "has_punctuation": ["float64", "int32"],
         "avg_word_length": ["float64", "int32"],
         "upper_ratio": ["float64", "int32"],
@@ -85,7 +86,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len": (0, 50000),
         "word_count": (0, 10000),
         "kindle_freq": (0.0, 50.0),
-        "sentiment_score": (-1.0, 1.0),
+        "sentiment": (-1.0, 1.0),
         "has_punctuation": (0.0, 1.0),
         "avg_word_length": (0.0, 50.0),
         "upper_ratio": (0.0, 1.0),
@@ -322,26 +323,23 @@ def validate_parquet_file(
 
         # Проверка дубликатов
         if check_duplicates and len(df) > 0:
-            import numpy as np
-
             try:
-                # Преобразуем все нехэшируемые типы в хэшируемые
-                df_for_dupes = df.copy()
-                for col in df_for_dupes.columns:
-                    # Детектируем нехэшируемые типы в первых строках
-                    sample_vals = df_for_dupes[col].dropna().head(10)
-                    if len(sample_vals) > 0:
-                        has_unhashable = any(
-                            isinstance(x, (np.ndarray, dict, list, set))
-                            for x in sample_vals
-                        )
-                        if has_unhashable:
-                            df_for_dupes[col] = df_for_dupes[col].apply(
-                                lambda x: str(x) if x is not None else None
-                            )
-                duplicates = df_for_dupes.duplicated().sum()
+                # Оптимизированная проверка: используем subset только из хэшируемых колонок
+                # или исключаем заведомо проблемные (списки, массивы)
+                hashable_cols = []
+                for col in df.columns:
+                    # Простая эвристика: если тип object, проверяем первый элемент
+                    if df[col].dtype == "object":
+                        first_val = df[col].iloc[0] if len(df) > 0 else None
+                        if isinstance(first_val, (list, dict, np.ndarray, set)):
+                            continue
+                    hashable_cols.append(col)
+
+                duplicates = df.duplicated(subset=hashable_cols).sum()
                 if duplicates > 0:
-                    warnings.append(f"Найдено {duplicates} дублированных строк")
+                    warnings.append(
+                        f"Найдено {duplicates} дублированных строк (по хэшируемым колонкам)"
+                    )
                     schema_info["duplicates"] = duplicates
             except Exception as e:
                 warnings.append(f"Не удалось проверить дубликаты: {e}")
@@ -384,7 +382,7 @@ def validate_parquet_dataset(
     check_consistency: bool = True,
 ) -> dict[str, DataValidationResult]:
     """Валидация полного набора parquet файлов (train/val/test)."""
-    log.info(f"Валидация dataset в директории: {data_dir}")
+    log.info("Валидация dataset в директории: %s", data_dir)
 
     results = {}
     dataframes = {}
@@ -403,10 +401,12 @@ def validate_parquet_dataset(
                     dataframes[split_name] = pd.read_parquet(file_path)
                 except Exception as e:
                     log.warning(
-                        f"Не удалось загрузить {split_name} для проверки консистентности: {e}"
+                        "Не удалось загрузить %s для проверки консистентности: %s",
+                        split_name,
+                        e,
                     )
         else:
-            log.warning(f"Файл {file_path} не найден")
+            log.warning("Файл %s не найден", file_path)
             results[split_name] = DataValidationResult(
                 is_valid=False,
                 errors=[f"Файл не найден: {file_path}"],
@@ -469,12 +469,7 @@ def main() -> bool:
     Выполняет валидацию всех parquet файлов в директории processed.
     Возвращает True если все валидации прошли успешно.
     """
-    from pathlib import Path
-
-    from scripts.config import PROCESSED_DATA_DIR
-    from scripts.logging_config import setup_auto_logging
-
-    log = setup_auto_logging()
+    setup_auto_logging()
 
     try:
         processed_dir = Path(PROCESSED_DATA_DIR)
@@ -509,7 +504,5 @@ def main() -> bool:
 
 
 if __name__ == "__main__":
-    import sys
-
     success = main()
     sys.exit(0 if success else 1)
