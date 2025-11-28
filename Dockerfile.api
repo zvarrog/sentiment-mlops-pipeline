@@ -10,7 +10,7 @@ WORKDIR /app
 FROM base AS deps
 COPY requirements.api.txt /app/requirements.api.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r /app/requirements.api.txt
+    pip install --default-timeout=300 -r /app/requirements.api.txt
 
 RUN python -m textblob.download_corpora
 

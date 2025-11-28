@@ -176,7 +176,7 @@ def _branch_by_mode(**context):
 with DAG(
     dag_id="kindle_unified_pipeline",
     default_args=default_args,
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     description=_DOC,
     tags=["sentiment", "ml"],

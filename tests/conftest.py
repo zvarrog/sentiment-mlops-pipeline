@@ -13,13 +13,18 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
-    """Настраивает переменные окружения для тестов."""
-    os.environ["AIRFLOW_HOME"] = "/tmp/airflow_test"
-    os.environ["RAW_DATA_DIR"] = "/tmp/data/raw"
-    os.environ["PROCESSED_DATA_DIR"] = "/tmp/data/processed"
-    os.environ["MODEL_DIR"] = "/tmp/models"
-    os.environ["MLFLOW_TRACKING_URI"] = "http://localhost:5000"
-    os.environ["POSTGRES_METRICS_URI"] = "postgresql://test:test@localhost:5432/test"
+    """Настраивает переменные окружения для тестов.
+
+    Не перезаписывает MLFLOW_TRACKING_URI и другие переменные если они уже установлены
+    (для запуска в Docker контейнерах).
+    """
+    os.environ.setdefault("AIRFLOW_HOME", "/tmp/airflow_test")
+    os.environ.setdefault("RAW_DATA_DIR", "/tmp/data/raw")
+    os.environ.setdefault("PROCESSED_DATA_DIR", "/tmp/data/processed")
+    os.environ.setdefault("MODEL_DIR", "/tmp/models")
+    # В Docker используется http://mlflow:5000, локально - http://localhost:5000
+    os.environ.setdefault("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    os.environ.setdefault("POSTGRES_METRICS_URI", "postgresql://test:test@localhost:5432/test")
 
 
 @pytest.fixture

@@ -13,35 +13,49 @@ class TestDockerServices:
     @pytest.mark.integration
     def test_api_service_responds(self):
         """Проверка доступности FastAPI service."""
+        import os
         import requests
 
+        # В контейнере используем docker network endpoints
+        api_url = os.getenv("API_URL") or "http://api:8000"
+
         try:
-            response = requests.get("http://localhost:8000/", timeout=3)
+            response = requests.get(f"{api_url}/", timeout=5)
             assert response.status_code == 200
-        except requests.RequestException:
-            pytest.skip("API service недоступен")
+            data = response.json()
+            assert "message" in data or "detail" in data
+        except requests.RequestException as e:
+            pytest.skip(f"API service недоступен ({api_url}): {e}")
 
     @pytest.mark.integration
     def test_mlflow_ui_responds(self):
         """Проверка доступности MLflow UI."""
+        import os
         import requests
 
+        mlflow_url = os.getenv("MLFLOW_TRACKING_URI") or "http://mlflow:5000"
+
         try:
-            response = requests.get("http://localhost:5000/", timeout=3)
+            response = requests.get(mlflow_url, timeout=5)
             assert response.status_code == 200
-        except requests.RequestException:
-            pytest.skip("MLflow UI недоступен")
+        except requests.RequestException as e:
+            pytest.skip(f"MLflow UI недоступен ({mlflow_url}): {e}")
 
     @pytest.mark.integration
     def test_prometheus_metrics_endpoint(self):
         """Проверка доступности Prometheus metrics."""
+        import os
         import requests
 
+        api_url = os.getenv("API_URL") or "http://api:8000"
+
         try:
-            response = requests.get("http://localhost:8000/metrics", timeout=3)
+            response = requests.get(f"{api_url}/metrics", timeout=5)
             assert response.status_code == 200
-        except requests.RequestException:
-            pytest.skip("API service недоступен")
+            # Prometheus metrics должны содержать TYPE/HELP директивы
+            assert "# TYPE" in response.text or "# HELP" in response.text
+        except requests.RequestException as e:
+            pytest.skip(f"API service недоступен ({api_url}): {e}")
 
 
 if __name__ == "__main__":

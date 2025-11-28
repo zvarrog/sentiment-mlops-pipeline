@@ -15,7 +15,9 @@ RUN chmod 644 /etc/logrotate.d/kindle-reviews
 USER airflow
 
 COPY requirements.txt /tmp/requirements.txt
+COPY tests/requirements.txt /tmp/tests-requirements.txt
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip --version && \
-    pip install --no-cache-dir -r /tmp/requirements.txt
+    pip install --default-timeout=300 --no-cache-dir -r /tmp/requirements.txt && \
+    pip install --default-timeout=300 --no-cache-dir -r /tmp/tests-requirements.txt

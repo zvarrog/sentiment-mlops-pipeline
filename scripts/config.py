@@ -110,6 +110,7 @@ MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
 
 # Лимит сэмплирования на класс для балансировки датасета (компромисс между
 # скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
+PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 35000)
 
 
 def _getenv_set(key: str, default: str = "") -> set[str]:
@@ -162,8 +163,8 @@ SELECTED_MODEL_KINDS = [
 ]
 
 # MLflow
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "kindle_reviews")
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI") or "http://mlflow:5000"
+MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME") or "kindle_reviews"
 MLFLOW_KEEP_LATEST = _getenv_int("MLFLOW_KEEP_LATEST", 3)
 MODEL_PRODUCTION_THRESHOLD = _getenv_float("MODEL_PRODUCTION_THRESHOLD", 0.75)
 

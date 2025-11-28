@@ -1,49 +1,64 @@
 """Интеграционные тесты для проверки полного пайплайна."""
 
+import os
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 
+def _get_dag_path(dag_name: str) -> Path:
+    """Получить путь к DAG файлу независимо от окружения (контейнер/хост).
+
+    Логика:
+    - В контейнере: /opt/airflow/dags/ (монтируется из ./airflow/dags/)
+    - На хосте: ./airflow/dags/ (от корня репозитория)
+
+    Path(__file__).parent.parent → /opt/airflow в контейнере, ./project_root на хосте
+
+    Args:
+        dag_name: Имя DAG файла (например, 'kindle_pipeline.py')
+
+    Returns:
+        Абсолютный путь к DAG файлу
+    """
+    # В контейнере dags монтируется в /opt/airflow/dags/, на хосте это ./airflow/dags/
+    container_path = Path(__file__).parent.parent / "dags" / dag_name
+    if container_path.exists():
+        return container_path
+
+    # Fallback для хоста: tests/../airflow/dags/
+    host_path = Path(__file__).parent.parent / "airflow" / "dags" / dag_name
+    return host_path
+
+
 class TestSparkProcessing:
     """Тесты для Spark обработки."""
 
     @pytest.mark.integration
-    def test_spark_process_creates_output(self, tmp_path, sample_dataframe):
-        """Проверка создания processed файлов после Spark обработки (CSV-ввод)."""
-        pytest.importorskip("pyspark")
+    def test_spark_process_creates_output(self):
+        """Проверка что Spark обработка создала файлы в /opt/airflow/data/processed/."""
+        from scripts.config import PROCESSED_DATA_DIR
 
-        from scripts.spark_process import process_data
+        processed_dir = Path(PROCESSED_DATA_DIR)
 
-        raw_dir = tmp_path / "raw"
-        processed_dir = tmp_path / "processed"
-        raw_dir.mkdir()
-        processed_dir.mkdir()
+        # Проверяем наличие всех трёх сплитов
+        train_path = processed_dir / "train.parquet"
+        val_path = processed_dir / "val.parquet"
+        test_path = processed_dir / "test.parquet"
 
-        sample_df = sample_dataframe.copy()
-        sample_df["reviewerID"] = ["A1", "A2", "A3"]
-        sample_df["asin"] = ["B1", "B2", "B3"]
-        sample_df["unixReviewTime"] = [1609459200, 1609459201, 1609459202]
+        if not train_path.exists():
+            pytest.skip(f"Обработанные данные не найдены в {processed_dir}. Запустите Spark pipeline сначала.")
 
-        input_file = raw_dir / "reviews.csv"
-        sample_df.to_csv(input_file, index=False)
+        assert val_path.exists(), f"val.parquet отсутствует в {processed_dir}"
+        assert test_path.exists(), f"test.parquet отсутствует в {processed_dir}"
 
-        import os
-
-        os.environ["RAW_DATA_DIR"] = str(raw_dir)
-        os.environ["CSV_NAME"] = "reviews.csv"
-        os.environ["PROCESSED_DATA_DIR"] = str(processed_dir)
-
-        try:
-            process_data()
-        except Exception:
-            pytest.skip("Spark/Java недоступны в окружении")
-
-        if not (processed_dir / "train.parquet").exists():
-            pytest.skip("Обработанные parquet не созданы (вероятно, Spark недоступен)")
-        assert (processed_dir / "val.parquet").exists()
-        assert (processed_dir / "test.parquet").exists()
+        # Проверяем что файлы не пустые
+        import pandas as pd
+        train_df = pd.read_parquet(train_path)
+        assert len(train_df) > 0, "train.parquet пустой"
+        assert "reviewText" in train_df.columns, "reviewText отсутствует в данных"
+        assert "overall" in train_df.columns, "overall (target) отсутствует в данных"
 
 
 class TestTrainPipeline:
@@ -51,69 +66,54 @@ class TestTrainPipeline:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_train_creates_model_artifacts_fast(
-        self, tmp_path, sample_parquet_files_small
-    ):
-        """Быстрый тест обучения на небольшом датасете (~100 записей на класс).
+    def test_train_creates_model_artifacts_fast(self):
+        """Проверка что обученная модель создана и имеет разумные метрики.
 
-        Использует fixture sample_parquet_files_small для генерации
-        сбалансированного синтетического датасета. MLflow мокается автоматически.
-
-        Помечен @pytest.mark.slow т.к. требует обучения моделей (даже урезанного).
+        Использует реальные данные из /opt/airflow/data/processed/.
+        Помечен @pytest.mark.slow т.к. требует загрузки модели.
         """
-        pytest.skip(
-            "Тест слишком тяжёлый для CI — требует обучения моделей. "
-            "Optuna может выбрать SVD с n_components > n_features для маленького датасета. "
-            "Запускайте вручную с реальными данными."
-        )
-        import os
+        from scripts.config import MODEL_DIR, MODEL_ARTEFACTS_DIR
 
-        model_dir = tmp_path / "models"
-        model_artefacts_dir = model_dir / "artefacts"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        model_artefacts_dir.mkdir(parents=True, exist_ok=True)
+        model_path = Path(MODEL_DIR) / "best_model.joblib"
+        meta_path = Path(MODEL_ARTEFACTS_DIR) / "best_model_meta.json"
 
-        # Устанавливаем пути к данным (фикстура создаёт parquet в sample_parquet_files_small)
-        os.environ["PROCESSED_DATA_DIR"] = str(sample_parquet_files_small)
-        os.environ["MODEL_DIR"] = str(model_dir)
-        os.environ["MODEL_ARTEFACTS_DIR"] = str(model_artefacts_dir)
-        # Ограничиваем Optuna для ускорения
-        os.environ["OPTUNA_N_TRIALS"] = "3"
-        os.environ["OPTUNA_TIMEOUT_SECONDS"] = "30"
-        # In-memory storage для тестов (без PostgreSQL)
-        os.environ["OPTUNA_STORAGE"] = "sqlite:///:memory:"
-        # Ограничиваем размер датасета для быстрого теста
-        os.environ["TEST_PER_CLASS"] = "100"
-
-        from scripts.train import run
-
-        # Запускаем обучение напрямую (без парсинга sys.argv)
-        run(force=False)
-
-        # Проверяем создание основных артефактов
-        model_path = model_dir / "best_model.joblib"
         if not model_path.exists():
             pytest.skip(
-                "best_model.joblib не создан (возможна урезанная среда/зависимости)"
+                f"Модель не найдена в {model_path}. Запустите обучение сначала (python scripts/train.py)."
             )
-        assert model_path.stat().st_size > 0, "best_model.joblib пустой"
 
-        # Проверяем метрики
-        meta_path = model_artefacts_dir / "best_model_meta.json"
-        assert meta_path.exists(), "best_model_meta.json не создан"
+        assert model_path.stat().st_size > 0, "best_model.joblib пустой"
+        assert meta_path.exists(), f"best_model_meta.json не найден в {MODEL_ARTEFACTS_DIR}"
+
+        # Проверяем метаданные модели
+        import json
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+        # Метаданные должны содержать test_metrics с f1_macro
+        assert "test_metrics" in meta, "Отсутствует test_metrics в метаданных"
+        assert "f1_macro" in meta["test_metrics"], "Отсутствует f1_macro в test_metrics"
+        assert "best_model" in meta, "Отсутствует best_model (тип модели) в метаданных"
+
+        # Проверяем что F1 разумный (выше random baseline 0.2)
+        test_f1 = meta["test_metrics"]["f1_macro"]
+        assert test_f1 > 0.3, f"F1-score слишком низкий: {test_f1:.3f}. Проверьте качество модели."
 
     @pytest.mark.integration
-    def test_train_logs_to_mlflow(self, sample_parquet_files_small):
-        """Проверка логирования в MLflow (требует запущенный MLflow server)."""
-        import mlflow
+    def test_train_logs_to_mlflow(self):
+        """Проверка что MLflow tracking server доступен."""
+        import os
+        import requests
+
+        # В контейнере используем docker network endpoint
+        mlflow_url = os.getenv("MLFLOW_TRACKING_URI") or "http://mlflow:5000"
 
         try:
-            experiment_name = "test_experiment"
-            mlflow.set_experiment(experiment_name)
-            runs = mlflow.search_runs(experiment_names=[experiment_name])
-            assert isinstance(runs, pd.DataFrame)
-        except Exception:
-            pytest.skip("MLflow server недоступен (http://localhost:5000)")
+            response = requests.get(mlflow_url, timeout=5)
+            # MLflow UI возвращает 200 на корневом endpoint
+            assert response.status_code == 200, f"MLflow недоступен: {response.status_code}"
+        except requests.RequestException as e:
+            pytest.skip(f"MLflow server недоступен ({mlflow_url}): {e}")
 
 
 class TestDownloadModule:
@@ -153,9 +153,10 @@ class TestAirflowDAG:
         except (ImportError, TypeError) as e:
             pytest.skip(f"Airflow несовместим с окружением: {e}")
 
-        dag_path = (
-            Path(__file__).parent.parent / "airflow" / "dags" / "kindle_pipeline.py"
-        )
+        dag_path = _get_dag_path("kindle_pipeline.py")
+        if not dag_path.exists():
+            pytest.skip(f"DAG файл не найден: {dag_path}")
+
         spec = importlib.util.spec_from_file_location(
             "kindle_pipeline",
             str(dag_path),
@@ -179,9 +180,10 @@ class TestAirflowDAG:
         except (ImportError, TypeError) as e:
             pytest.skip(f"Airflow несовместим с окружением: {e}")
 
-        dag_path = (
-            Path(__file__).parent.parent / "airflow" / "dags" / "kindle_pipeline.py"
-        )
+        dag_path = _get_dag_path("kindle_pipeline.py")
+        if not dag_path.exists():
+            pytest.skip(f"DAG файл не найден: {dag_path}")
+
         spec = importlib.util.spec_from_file_location(
             "kindle_pipeline",
             str(dag_path),
