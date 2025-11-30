@@ -7,8 +7,10 @@ from typing import Any
 
 import pandas as pd
 
-REQUIRED_TEXT_COL = "reviewText"
-OUTLIER_SIGMAS = 3  # число сигм для детекции выбросов
+from scripts.config import OUTLIER_SIGMAS, REQUIRED_TEXT_COL
+from scripts.logging_config import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -40,8 +42,8 @@ class FeatureContract:
                 baseline_stats = json.loads(baseline_path.read_text(encoding="utf-8"))
                 if isinstance(baseline_stats, dict) and baseline_stats:
                     expected_numeric = [str(k) for k in baseline_stats]
-            except (OSError, json.JSONDecodeError):
-                baseline_stats = None
+            except (OSError, json.JSONDecodeError) as e:
+                log.debug("Не удалось загрузить baseline stats: %s", e)
 
         if schema_path.exists():
             try:
@@ -50,11 +52,9 @@ class FeatureContract:
                 used = inp.get("numeric_features") if isinstance(inp, dict) else None
                 if isinstance(used, list) and used:
                     # Если уже загрузили из baseline, объединяем (хотя они должны совпадать)
-                    expected_numeric = list(
-                        set(expected_numeric) | {str(x) for x in used}
-                    )
-            except (OSError, json.JSONDecodeError):
-                pass
+                    expected_numeric = list(set(expected_numeric) | {str(x) for x in used})
+            except (OSError, json.JSONDecodeError) as e:
+                log.debug("Не удалось загрузить model schema: %s", e)
 
         if not expected_numeric:
             raise RuntimeError(
@@ -64,9 +64,7 @@ class FeatureContract:
 
         return cls([REQUIRED_TEXT_COL], sorted(expected_numeric), baseline_stats)
 
-    def validate_input_data(
-        self, data: dict[str, Any] | pd.DataFrame
-    ) -> dict[str, list[str]]:
+    def validate_input_data(self, data: dict[str, Any] | pd.DataFrame) -> dict[str, list[str]]:
         """Возвращает словарь предупреждений по входным данным."""
         if isinstance(data, pd.DataFrame):
             data = {c: data[c].tolist() for c in data.columns}
@@ -96,10 +94,7 @@ class FeatureContract:
                 std = baseline.get("std", 1.0)
                 if std > 0:
                     for i, v in enumerate(values):
-                        if (
-                            isinstance(v, (int, float))
-                            and abs(v - mean) > OUTLIER_SIGMAS * std
-                        ):
+                        if isinstance(v, (int, float)) and abs(v - mean) > OUTLIER_SIGMAS * std:
                             outliers.append(
                                 f"{col}[{i}]: {v} (≈{mean:.2f}±{OUTLIER_SIGMAS * std:.2f})"
                             )
@@ -117,8 +112,7 @@ class FeatureContract:
         info = {
             "required_text_columns": self.required_text_columns,
             "expected_numeric_columns": self.expected_numeric_columns,
-            "total_features": len(self.required_text_columns)
-            + len(self.expected_numeric_columns),
+            "total_features": len(self.required_text_columns) + len(self.expected_numeric_columns),
         }
 
         if self.baseline_stats:

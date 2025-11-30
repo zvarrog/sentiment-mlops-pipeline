@@ -17,7 +17,7 @@ class DummyModel:
         # Поддерживаем как pd.Series, так и pd.DataFrame
         try:
             n = len(X)
-        except Exception:
+        except TypeError:
             n = 1
         # Возвращаем нули
         return np.zeros(n, dtype=int)
@@ -25,7 +25,7 @@ class DummyModel:
     def predict_proba(self, X):
         try:
             n = len(X)
-        except Exception:
+        except TypeError:
             n = 1
         probs0 = np.full(n, 0.6)
         probs1 = np.full(n, 0.4)
@@ -62,17 +62,18 @@ def test_client(mock_model, mock_feature_contract, tmp_path_factory):
     ):
         mock_contract_cls.from_model_artifacts.return_value = mock_feature_contract
 
-        from scripts.api_service import create_app
+        from scripts.api.app import create_app
 
         app = create_app(defer_artifacts=False)
-        client = TestClient(app)
-        app.state.META = {"best_model": "logreg"}
-        app.state.NUMERIC_DEFAULTS = {
-            "text_len": {"mean": 10.0},
-            "word_count": {"mean": 2.0},
-        }
-        app.state.FEATURE_CONTRACT = mock_feature_contract
-        yield client
+        # Используем context manager для запуска lifespan
+        with TestClient(app) as client:
+            app.state.META = {"best_model": "logreg"}
+            app.state.NUMERIC_DEFAULTS = {
+                "text_len": {"mean": 10.0},
+                "word_count": {"mean": 2.0},
+            }
+            app.state.FEATURE_CONTRACT = mock_feature_contract
+            yield client
 
 
 class TestAPIServiceHealthCheck:
@@ -145,7 +146,3 @@ class TestAPIMetrics:
         """GET /metrics возвращает 200."""
         response = test_client.get("/metrics")
         assert response.status_code == 200
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

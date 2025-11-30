@@ -1,6 +1,7 @@
 """Интеграционные тесты для проверки полного пайплайна."""
 
 import os
+import subprocess
 from pathlib import Path
 
 import pandas as pd
@@ -131,7 +132,7 @@ class TestDownloadModule:
 
         try:
             download()
-        except Exception:
+        except (subprocess.CalledProcessError, OSError, FileNotFoundError):
             pytest.skip("Требуется доступ к интернету")
 
         raw_dir = Path(os.environ["RAW_DATA_DIR"])
@@ -208,6 +209,3 @@ class TestAirflowDAG:
         for task_id in required_tasks:
             assert task_id in task_ids, f"Task {task_id} отсутствует в DAG"
 
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-m", "not integration"])

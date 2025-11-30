@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
-import optuna
+from optuna.trial import BaseTrial
 from scipy import sparse as sp
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import TruncatedSVD
@@ -36,12 +36,20 @@ def _to_dense(x):
 
 
 class PipelineBuilder(ABC):
-    def __init__(self, trial: optuna.Trial):
+    """Базовый класс для построения sklearn Pipeline.
+
+    Args:
+        trial: Optuna trial для сэмплирования гиперпараметров.
+        numeric_cols: Список доступных числовых колонок в данных.
+    """
+
+    def __init__(self, trial: BaseTrial, numeric_cols: list[str] | None = None):
         self.trial = trial
+        self._numeric_cols = numeric_cols if numeric_cols is not None else list(NUMERIC_COLS)
 
     @abstractmethod
     def build(self) -> Pipeline:
-        pass
+        """Строит sklearn Pipeline для данного типа модели."""
 
     def _build_preprocessor(
         self, use_stemming: bool, text_max_features: int, skip_svd: bool = False
@@ -63,9 +71,7 @@ class PipelineBuilder(ABC):
         if not skip_svd:
             use_svd = self.trial.suggest_categorical("use_svd", [False, True])
             if use_svd:
-                svd_components = self.trial.suggest_int(
-                    "svd_components", 20, 100, step=20
-                )
+                svd_components = self.trial.suggest_int("svd_components", 20, 100, step=20)
                 text_steps.append(
                     (
                         "svd",
@@ -75,11 +81,7 @@ class PipelineBuilder(ABC):
 
         text_pipeline = Pipeline(text_steps)
 
-        numeric_available = [
-            c
-            for c in NUMERIC_COLS
-            if c in self.trial.user_attrs.get("numeric_cols", NUMERIC_COLS)
-        ]
+        numeric_available = self._numeric_cols
         numeric_pipeline = Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="constant", fill_value=0)),
@@ -101,27 +103,32 @@ class PipelineBuilder(ABC):
 
 
 class DistilBertBuilder(PipelineBuilder):
+    """Builder для DistilBERT модели (text-only, без числовых признаков)."""
+
     def build(self) -> Pipeline:
-        epochs = self.trial.suggest_int(
-            "db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS
-        )
+        epochs = self.trial.suggest_int("db_epochs", DISTILBERT_MIN_EPOCHS, DISTILBERT_MAX_EPOCHS)
         lr = self.trial.suggest_float("db_lr", 1e-5, 5e-5, log=True)
         max_len = self.trial.suggest_int("db_max_len", 96, 192, step=32)
-        use_bi = self.trial.suggest_categorical("db_use_bigrams", [False, True])
 
         clf = DistilBertClassifier(
             epochs=epochs,
             lr=lr,
             max_len=max_len,
             device=TRAIN_DEVICE,
-            use_bigrams=use_bi,
         )
         return Pipeline([("model", clf)])
 
 
 class LogRegBuilder(PipelineBuilder):
-    def __init__(self, trial: optuna.Trial, fixed_solver: str | None = None):
-        super().__init__(trial)
+    """Буилдер для Logistic Regression с TF-IDF и числовыми признаками."""
+
+    def __init__(
+        self,
+        trial: BaseTrial,
+        numeric_cols: list[str] | None = None,
+        fixed_solver: str | None = None,
+    ):
+        super().__init__(trial, numeric_cols)
         self.fixed_solver = fixed_solver
 
     def build(self) -> Pipeline:
@@ -133,25 +140,19 @@ class LogRegBuilder(PipelineBuilder):
             step=TFIDF_MAX_FEATURES_STEP,
         )
 
-        preprocessor = self._build_preprocessor(
-            use_stemming, text_max_features, skip_svd=True
-        )
+        preprocessor = self._build_preprocessor(use_stemming, text_max_features, skip_svd=True)
         steps = [("pre", preprocessor)]
 
         c_value = self.trial.suggest_float("logreg_C", 1e-4, 1e2, log=True)
         if self.fixed_solver is not None:
-            solver = self.trial.suggest_categorical(
-                "logreg_solver", [self.fixed_solver]
-            )
+            solver = self.trial.suggest_categorical("logreg_solver", [self.fixed_solver])
         else:
             solver = self.trial.suggest_categorical(
                 "logreg_solver",
                 ["lbfgs", "liblinear"],  # "saga" медленно сходится на больших данных
             )
 
-        pen_others = self.trial.suggest_categorical(
-            "logreg_penalty_liblinear_saga", ["l1", "l2"]
-        )
+        pen_others = self.trial.suggest_categorical("logreg_penalty_liblinear_saga", ["l1", "l2"])
         penalty = "l2" if solver == "lbfgs" else pen_others
 
         if solver == "lbfgs":
@@ -251,20 +252,36 @@ class HistGBBuilder(PipelineBuilder):
 
 
 class ModelBuilderFactory:
+    """Фабрика для создания PipelineBuilder по типу модели."""
+
     @staticmethod
     def get_builder(
-        model_kind: ModelKind, trial: optuna.Trial, fixed_solver: str | None = None
+        model_kind: ModelKind,
+        trial: BaseTrial,
+        numeric_cols: list[str] | None = None,
+        fixed_solver: str | None = None,
     ) -> PipelineBuilder:
+        """Создаёт Builder для указанного типа модели.
+
+        Args:
+            model_kind: Тип модели из ModelKind enum.
+            trial: Optuna trial для сэмплирования гиперпараметров.
+            numeric_cols: Список доступных числовых колонок (если None — берётся из config).
+            fixed_solver: Фиксированный solver для LogReg (опционально).
+
+        Returns:
+            PipelineBuilder для указанного типа модели.
+        """
         match model_kind:
             case ModelKind.distilbert:
-                return DistilBertBuilder(trial)
+                return DistilBertBuilder(trial, numeric_cols)
             case ModelKind.logreg:
-                return LogRegBuilder(trial, fixed_solver)
+                return LogRegBuilder(trial, numeric_cols, fixed_solver)
             case ModelKind.rf:
-                return RandomForestBuilder(trial)
+                return RandomForestBuilder(trial, numeric_cols)
             case ModelKind.mlp:
-                return MLPBuilder(trial)
+                return MLPBuilder(trial, numeric_cols)
             case ModelKind.hist_gb:
-                return HistGBBuilder(trial)
+                return HistGBBuilder(trial, numeric_cols)
             case _:
                 raise ValueError(f"Неизвестный тип модели: {model_kind}")

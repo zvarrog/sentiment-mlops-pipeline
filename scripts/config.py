@@ -27,6 +27,9 @@ BEST_MODEL_FILENAME = "best_model.joblib"
 BEST_MODEL_META_FILENAME = "best_model_meta.json"
 BASELINE_NUMERIC_STATS_FILENAME = "baseline_numeric_stats.json"
 
+# Имя обязательной текстовой колонки (единый источник истины)
+REQUIRED_TEXT_COL = "reviewText"
+
 NUMERIC_COLS: list[str] = [
     "text_len",
     "word_count",
@@ -79,12 +82,12 @@ SEED = _getenv_int("SEED", 42)
 RAW_DATA_DIR = _getenv_path("RAW_DATA_DIR", str(DEFAULT_RAW_DATA_DIR))
 PROCESSED_DATA_DIR = _getenv_path("PROCESSED_DATA_DIR", str(DEFAULT_PROCESSED_DATA_DIR))
 MODEL_DIR = _getenv_path("MODEL_DIR", str(DEFAULT_MODEL_DIR))
-MODEL_ARTEFACTS_DIR = _getenv_path(
-    "MODEL_ARTEFACTS_DIR", str(MODEL_DIR / DEFAULT_MODEL_ARTEFACTS_SUBDIR)
-)
-DRIFT_ARTEFACTS_DIR = _getenv_path(
-    "DRIFT_ARTEFACTS_DIR", str(MODEL_DIR / DEFAULT_DRIFT_ARTEFACTS_SUBDIR)
-)
+
+_model_artefacts_default = MODEL_DIR / DEFAULT_MODEL_ARTEFACTS_SUBDIR
+_drift_artefacts_default = MODEL_DIR / DEFAULT_DRIFT_ARTEFACTS_SUBDIR
+
+MODEL_ARTEFACTS_DIR = _getenv_path("MODEL_ARTEFACTS_DIR", str(_model_artefacts_default))
+DRIFT_ARTEFACTS_DIR = _getenv_path("DRIFT_ARTEFACTS_DIR", str(_drift_artefacts_default))
 
 BEST_MODEL_PATH = MODEL_DIR / BEST_MODEL_FILENAME
 BEST_MODEL_META_PATH = MODEL_ARTEFACTS_DIR / BEST_MODEL_META_FILENAME
@@ -108,8 +111,10 @@ RUN_DATA_VALIDATION = _getenv_bool("RUN_DATA_VALIDATION", True)
 # Порог минимального размера выборок для стабильной оценки PSI метрики
 MIN_SAMPLES_FOR_PSI = _getenv_int("MIN_SAMPLES_FOR_PSI", 10)
 
-# Лимит сэмплирования на класс для балансировки датасета (компромисс между
-# скоростью обработки и качеством модели: ~35k/класс = ~175k total для 5 классов)
+# Сглаживание для PSI (избежание деления на ноль в log)
+PSI_EPSILON = _getenv_float("PSI_EPSILON", 1e-6)
+
+# Лимит сэмплов на класс (оптимизировано эмпирически)
 PER_CLASS_LIMIT = _getenv_int("PER_CLASS_LIMIT", 35000)
 
 
@@ -122,24 +127,22 @@ def _getenv_set(key: str, default: str = "") -> set[str]:
 # Дрейф: колонки для игнорирования при расчёте PSI
 DRIFT_IGNORE_COLS = _getenv_set("DRIFT_IGNORE_COLS", "")
 
-# Размер словаря TF-IDF — кратный 1024 для выравнивания в памяти
 HASHING_TF_FEATURES = _getenv_int("HASHING_TF_FEATURES", 6144)
 SHUFFLE_PARTITIONS = _getenv_int("SHUFFLE_PARTITIONS", 32)
 MIN_DF = _getenv_int("MIN_DF", 3)
 MIN_TF = _getenv_int("MIN_TF", 2)
+
+# Партиционирование parquet при записи (оптимизировано под размер датасета)
+PARQUET_TRAIN_PARTITIONS = _getenv_int("PARQUET_TRAIN_PARTITIONS", 4)
+PARQUET_VAL_TEST_PARTITIONS = _getenv_int("PARQUET_VAL_TEST_PARTITIONS", 2)
 
 # TF-IDF параметры
 TFIDF_MAX_FEATURES_MIN = _getenv_int("TFIDF_MAX_FEATURES_MIN", 2000)
 TFIDF_MAX_FEATURES_MAX = _getenv_int("TFIDF_MAX_FEATURES_MAX", 6000)
 TFIDF_MAX_FEATURES_STEP = _getenv_int("TFIDF_MAX_FEATURES_STEP", 500)
 
-# Обучение
-OPTUNA_N_TRIALS = _getenv_int(
-    "OPTUNA_N_TRIALS", 30
-)  # Компромисс между качеством оптимизации и временем
-OPTUNA_STORAGE = os.environ.get(
-    "OPTUNA_STORAGE", "postgresql+psycopg2://admin:admin@postgres:5432/optuna"
-)
+OPTUNA_N_TRIALS = _getenv_int("OPTUNA_N_TRIALS", 30)
+OPTUNA_STORAGE = os.environ.get("OPTUNA_STORAGE", "")
 STUDY_BASE_NAME = os.environ.get("STUDY_BASE_NAME", "kindle_optuna")
 N_FOLDS = _getenv_int("N_FOLDS", 1)  # 1 = holdout validation, >1 = cross-validation
 TRAIN_DEVICE = os.environ.get("TRAIN_DEVICE", "cpu")
@@ -152,6 +155,7 @@ OPTUNA_TOPK_EXPORT = _getenv_int("OPTUNA_TOPK_EXPORT", 20)
 # DistilBERT гиперпараметры
 DISTILBERT_MIN_EPOCHS = _getenv_int("DISTILBERT_MIN_EPOCHS", 2)
 DISTILBERT_MAX_EPOCHS = _getenv_int("DISTILBERT_MAX_EPOCHS", 8)
+DISTILBERT_EARLY_STOP_PATIENCE = _getenv_int("DISTILBERT_EARLY_STOP_PATIENCE", 3)
 
 # Модели для обучения
 SELECTED_MODEL_KINDS = [
@@ -159,7 +163,7 @@ SELECTED_MODEL_KINDS = [
     ModelKind.rf,
     ModelKind.hist_gb,
     ModelKind.mlp,
-    # ModelKind.distilbert,
+    ModelKind.distilbert,
 ]
 
 # MLflow
@@ -184,11 +188,21 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
 LOG_INCLUDE_TIMESTAMP = _getenv_bool("LOG_INCLUDE_TIMESTAMP", True)
 
-# API
 API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = _getenv_int("API_PORT", 8000)
-MAX_TEXT_LENGTH = 2000
-MAX_BATCH_SIZE = 100
+MAX_TEXT_LENGTH = _getenv_int("MAX_TEXT_LENGTH", 2000)
+MAX_BATCH_SIZE = _getenv_int("MAX_BATCH_SIZE", 100)
+API_REQUEST_TIMEOUT_SEC = _getenv_int("API_REQUEST_TIMEOUT_SEC", 10)
+API_RATE_LIMIT_PER_MIN = _getenv_int("API_RATE_LIMIT_PER_MIN", 120)
+
+# Redis для rate limiting (опционально, если не задан — используется in-memory)
+REDIS_URL = os.environ.get("REDIS_URL", "")
+
+# Число сигм для детекции выбросов в валидации признаков
+OUTLIER_SIGMAS = _getenv_int("OUTLIER_SIGMAS", 3)
+
+# Лимит семплов ошибок классификации для сохранения в артефакты
+MISCLASSIFIED_SAMPLES_LIMIT = _getenv_int("MISCLASSIFIED_SAMPLES_LIMIT", 200)
 
 
 @dataclass

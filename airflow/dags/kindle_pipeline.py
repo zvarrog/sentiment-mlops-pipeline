@@ -3,10 +3,10 @@
 Поддерживает:
 - последовательное обучение с Optuna HPO
 - параллельное обучение нескольких моделей
+
+Note: PYTHONPATH должен быть настроен в docker-compose.yml (или .env).
 """
 
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -15,21 +15,13 @@ from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from airflow import DAG
 
-# Корректный способ импорта модулей проекта в Airflow:
-# 1. Установить пакет в editable mode: pip install -e /path/to/project
-# 2. Либо добавить PYTHONPATH в airflow.cfg или docker-compose.yml
-# 3. Либо использовать переменную окружения AIRFLOW__CORE__DAGS_FOLDER
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from scripts.config import (
     DATA_PATHS,
     DRIFT_ARTEFACTS_DIR,
     PROCESSED_DATA_DIR,
     SELECTED_MODEL_KINDS,
 )
-from scripts.logging_config import setup_auto_logging
+from scripts.logging_config import setup_logging
 from scripts.models.kinds import ModelKind
 from scripts.utils import get_flag, get_value
 
@@ -51,7 +43,7 @@ default_args = {
 def _task_download(**context):
     from scripts.download import main as download_main
 
-    log = setup_auto_logging()
+    log = setup_logging()
     force_download = get_flag(context, "force_download", False)
     log.info("Загрузка данных (force=%s)", force_download)
     return str(download_main(force=force_download))
@@ -60,7 +52,7 @@ def _task_download(**context):
 def _task_validate_data(**context):
     from scripts.data_validation import main as validate_main
 
-    log = setup_auto_logging()
+    log = setup_logging()
     if not get_flag(context, "run_data_validation", True):
         log.info("Валидация пропущена")
         return
@@ -73,7 +65,7 @@ def _task_validate_data(**context):
 def _task_inject_drift(**context):
     from scripts.drift_injection import main as inject_main
 
-    log = setup_auto_logging()
+    log = setup_logging()
     log.info("Инъекция дрейфа")
     result = inject_main()
 
@@ -85,7 +77,7 @@ def _task_inject_drift(**context):
 def _task_process(**context):
     from scripts.spark_process import process_data
 
-    log = setup_auto_logging()
+    log = setup_logging()
     force_process = get_flag(context, "force_process", False)
     log.info("Обработка данных (force=%s)", force_process)
 
@@ -101,7 +93,7 @@ def _task_process(**context):
 def _task_drift_monitor(**context):
     from scripts.drift_monitor import run_drift_monitor
 
-    log = setup_auto_logging()
+    log = setup_logging()
     if not get_flag(context, "run_drift_monitor", False):
         log.info("Мониторинг пропущен")
         return
@@ -131,7 +123,7 @@ def _task_drift_monitor(**context):
 def _task_train_standard(**context):
     from scripts.train import run as train_run
 
-    log = setup_auto_logging()
+    log = setup_logging()
     force_train = get_flag(context, "force_train", False)
     log.info("Обучение (standard, force=%s)", force_train)
     train_run(force=force_train)
@@ -140,7 +132,7 @@ def _task_train_standard(**context):
 def _train_model_parallel(model_kind: str, **context):
     from scripts.train import run as train_run
 
-    log = setup_auto_logging()
+    log = setup_logging()
     force_train = get_flag(context, "force_train", False)
     log.info("Обучение модели: %s", model_kind)
 
@@ -158,7 +150,7 @@ def train_one(model_kind: str, **context):
 
 @task
 def select_best(results: list[dict], **context):
-    log = setup_auto_logging()
+    log = setup_logging()
     if not results:
         raise ValueError("Нет обученных моделей")
     log.info("Параллельное обучение завершено, моделей: %d", len(results))
@@ -169,6 +161,7 @@ def _branch_by_mode(**context):
     parallel = get_flag(context, "parallel", False)
     if parallel:
         from scripts.config import SELECTED_MODEL_KINDS
+
         return [f"train_one.{model.value}" for model in SELECTED_MODEL_KINDS]
     return ["train_standard"]
 

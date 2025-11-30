@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import cast
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -18,13 +17,11 @@ from scripts.config import (
     MODEL_ARTEFACTS_DIR,
     NUMERIC_COLS,
     PROCESSED_DATA_DIR,
+    PSI_EPSILON,
 )
 from scripts.logging_config import get_logger
 
-# Настройка matplotlib для работы без дисплея
-matplotlib.use("Agg")
-
-log = get_logger("drift_monitor")
+log = get_logger(__name__)
 
 
 def _calculate_bin_cuts(data: np.ndarray, bins: int = 10) -> np.ndarray:
@@ -45,13 +42,13 @@ def psi(
     """Вычисляет Population Stability Index между двумя распределениями.
 
     Args:
-        expected: Базовое (эталонное) распределение признака
-        actual: Актуальное распределение признака для проверки на дрейф
-        bins: Количество бинов для гистограммы (по умолчанию 10)
-        cuts: Необязательные заранее вычисленные границы бинов.
+        expected (np.ndarray): Базовое (эталонное) распределение признака.
+        actual (np.ndarray): Актуальное распределение для проверки на дрейф.
+        bins (int): Количество бинов для гистограммы. По умолчанию 10.
+        cuts (np.ndarray | None): Заранее вычисленные границы бинов.
 
     Returns:
-        float: Значение PSI (>0.2 обычно указывает на значимый дрейф)
+        float: Значение PSI. >0.2 указывает на значимый дрейф.
     """
     expected = expected[~np.isnan(expected)]
     actual = actual[~np.isnan(actual)]
@@ -68,10 +65,9 @@ def psi(
     exp_counts = np.histogram(expected, bins=cuts)[0].astype(float)
     act_counts = np.histogram(actual, bins=cuts)[0].astype(float)
 
-    # Добавляем epsilon, чтобы избежать деления на ноль
-    epsilon = 1e-6
-    exp_pct = (exp_counts + epsilon) / (exp_counts.sum() + epsilon * len(exp_counts))
-    act_pct = (act_counts + epsilon) / (act_counts.sum() + epsilon * len(act_counts))
+    # Сглаживание для избежания деления на ноль в логарифме
+    exp_pct = (exp_counts + PSI_EPSILON) / (exp_counts.sum() + PSI_EPSILON * len(exp_counts))
+    act_pct = (act_counts + PSI_EPSILON) / (act_counts.sum() + PSI_EPSILON * len(act_counts))
 
     return float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct)))
 
@@ -104,9 +100,7 @@ def calculate_drift(
         cuts = _calculate_bin_cuts(expected[~np.isnan(expected)], bins=10)
         val = psi(expected, actual, cuts=cuts)
 
-        report.append(
-            {"feature": col, "psi": float(val), "drift": bool(val > threshold)}
-        )
+        report.append({"feature": col, "psi": float(val), "drift": bool(val > threshold)})
     return report
 
 
@@ -157,9 +151,7 @@ def run_drift_monitor(
     """
     baseline_path = MODEL_ARTEFACTS_DIR / "baseline_numeric_stats.json"
     if not baseline_path.exists():
-        log.warning(
-            "Дрифт‑монитор: отсутствует %s — мониторинг пропущен", str(baseline_path)
-        )
+        log.warning("Дрифт‑монитор: отсутствует %s — мониторинг пропущен", str(baseline_path))
         return []
 
     try:
@@ -171,7 +163,7 @@ def run_drift_monitor(
 
     try:
         new_df = pd.read_parquet(new_path)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         log.error("Ошибка чтения новых данных %s: %s", new_path, e)
         return []
 
@@ -182,7 +174,7 @@ def run_drift_monitor(
 
     try:
         train_df = pd.read_parquet(train_parquet)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         log.error("Ошибка чтения обучающей выборки %s: %s", train_parquet, e)
         return []
 

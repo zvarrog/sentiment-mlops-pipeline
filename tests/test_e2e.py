@@ -58,5 +58,3 @@ class TestDockerServices:
             pytest.skip(f"API service недоступен ({api_url}): {e}")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-m", "integration"])

@@ -2,6 +2,7 @@
 *.pyc
 __pycache__/
 *.tmp
+.mypy_cache/
 
 kaggle.json
 .vscode/
@@ -10,3 +11,4 @@ data/raw/
 data/processed/
 mlruns/
 artefacts/model_artefacts/candidates/
+artefacts/best_model.joblib

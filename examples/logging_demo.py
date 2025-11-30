@@ -21,8 +21,8 @@ def setup_demo_logging():
         "loggers": {
             # Логгер для всего пакета scripts
             "scripts": {"level": "INFO", "handlers": ["console"], "propagate": False},
-            # Специально настроим scripts.api_service, чтобы показать иерархию
-            "scripts.api_service": {
+            # Специально настроим scripts.api, чтобы показать иерархию
+            "scripts.api": {
                 "level": "WARNING",  # Глушим INFO для этого модуля
                 "handlers": ["console"],
                 "propagate": False,
@@ -38,13 +38,13 @@ def run_demo():
     print("--- DEMO START ---\n")
 
     # 1. Использование __name__ (правильный путь)
-    # Представим, что мы внутри scripts/api_service.py
-    logger_name_module = "scripts.api_service"
+    # Представим, что мы внутри scripts/api/app.py
+    logger_name_module = "scripts.api.app"
     log_module = logging.getLogger(logger_name_module)
 
     print(f"1. Логгер через __name__ ('{logger_name_module}')")
     print(
-        f"   Настройки наследуются от 'scripts' или переопределены для '{logger_name_module}'"
+        f"   Настройки наследуются от 'scripts' или переопределены для 'scripts.api'"
     )
     log_module.info("Это INFO сообщение (не должно показаться, т.к. level=WARNING)")
     log_module.warning("Это WARNING сообщение (должно показаться)")
@@ -52,7 +52,7 @@ def run_demo():
     print("\n" + "-" * 20 + "\n")
 
     # 2. Использование кастомного имени (твой вариант)
-    logger_name_custom = "api_service"
+    logger_name_custom = "api"
     log_custom = logging.getLogger(logger_name_custom)
 
     print(f"2. Логгер через строку ('{logger_name_custom}')")

@@ -34,6 +34,8 @@ from scripts.config import (
     HASHING_TF_FEATURES,
     MIN_DF,
     MIN_TF,
+    PARQUET_TRAIN_PARTITIONS,
+    PARQUET_VAL_TEST_PARTITIONS,
     PER_CLASS_LIMIT,
     PROCESSED_DATA_DIR,
     RAW_DATA_DIR,
@@ -50,7 +52,7 @@ from scripts.feature_engineering import (
 )
 from scripts.logging_config import get_logger
 
-log = get_logger("spark_process")
+log = get_logger(__name__)
 
 
 @pandas_udf(FloatType())
@@ -115,9 +117,7 @@ def clean_and_balance_data(df: DataFrame) -> DataFrame:
 
     # Чистим данные: валидные тексты и оценки, исключаем пустые/пробельные тексты
     clean = df.filter(
-        (col("reviewText").isNotNull())
-        & (col("overall").isNotNull())
-        & (col("text_len") > 0)
+        (col("reviewText").isNotNull()) & (col("overall").isNotNull()) & (col("text_len") > 0)
     )
     log.info("Фильтрация null и пустых текстов применена")
 
@@ -134,9 +134,7 @@ def clean_and_balance_data(df: DataFrame) -> DataFrame:
 
 def add_sentiment_features(df: DataFrame) -> DataFrame:
     return (
-        df.withColumn(
-            "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
-        )
+        df.withColumn("avg_word_length", col("text_len") / greatest(col("word_count"), lit(1)))
         .withColumn("sentiment", sentiment_udf(col("reviewText")))
         .withColumn(
             "sentiment_category",
@@ -224,17 +222,16 @@ def add_aggregations(
         item_stats, on="asin", how="left"
     )
 
-    log.info(
-        "После добавления агрегатов кол-во колонок в train: %d", len(train_res.columns)
-    )
+    log.info("После добавления агрегатов кол-во колонок в train: %d", len(train_res.columns))
 
-    # Force materialization of stats before returning to ensure they are computed
-    # However, in lazy evaluation, this might not be strictly necessary until write,
-    # but persisting them helps if they are used multiple times (which they are here).
+    # Принудительная материализация статистик перед возвратом для гарантии вычисления.
+    # При ленивых вычислениях это не строго обязательно до записи,
+    # но persist помогает при многократном использовании (как здесь).
     return train_res, val_res, test_res
 
 
 def validate_data() -> None:
+    """Валидирует сохраненные parquet файлы."""
     if not RUN_DATA_VALIDATION:
         return
 
@@ -249,8 +246,7 @@ def validate_data() -> None:
 
         if not all_valid:
             log.warning("Обнаружены проблемы в сохранённых данных")
-
-    except (OSError, ValueError, ImportError) as e:
+    except (OSError, ValueError) as e:
         log.warning("Ошибка валидации сохранённых данных: %s", e)
 
 
@@ -263,12 +259,14 @@ def process_data(force: bool = False) -> None:
         and DATA_PATHS.test.exists()
     ):
         log.warning(
-            "Обработанные данные уже существуют в %s. Для форсированной обработки используйте force=True.",
+            "Обработанные данные уже существуют в %s. Используйте force=True.",
             str(PROCESSED_DATA_DIR),
         )
         return
 
     spark = create_spark_session()
+    clean = None
+    train = val = test = None
 
     try:
         df = load_data(spark)
@@ -293,13 +291,29 @@ def process_data(force: bool = False) -> None:
         train, val, test = add_aggregations(train, val, test)
 
         # Save
-        train.repartition(4).write.mode("overwrite").parquet(str(DATA_PATHS.train))
-        val.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.val))
-        test.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.test))
+        train.repartition(PARQUET_TRAIN_PARTITIONS).write.mode("overwrite").parquet(
+            str(DATA_PATHS.train)
+        )
+        val.repartition(PARQUET_VAL_TEST_PARTITIONS).write.mode("overwrite").parquet(
+            str(DATA_PATHS.val)
+        )
+        test.repartition(PARQUET_VAL_TEST_PARTITIONS).write.mode("overwrite").parquet(
+            str(DATA_PATHS.test)
+        )
 
         log.info("Данные сохранены в %s", str(PROCESSED_DATA_DIR.resolve()))
 
     finally:
+        # Освобождаем память: unpersist всех закешированных DataFrame
+        if clean is not None:
+            clean.unpersist()
+        if train is not None:
+            train.unpersist()
+        if val is not None:
+            val.unpersist()
+        if test is not None:
+            test.unpersist()
+
         spark.stop()
 
     validate_data()

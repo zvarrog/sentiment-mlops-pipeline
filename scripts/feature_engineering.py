@@ -14,6 +14,10 @@ from typing import cast
 import pandas as pd
 from textblob import TextBlob
 
+from scripts.logging_config import get_logger
+
+log = get_logger(__name__)
+
 
 def clean_text(text: str) -> str:
     if not text or not isinstance(text, str):
@@ -27,18 +31,24 @@ def clean_text(text: str) -> str:
 
 
 def calculate_sentiment(text: str) -> float:
+    """Рассчитывает показатель тональности (sentiment polarity) через TextBlob.
+
+    Возвращает:
+        float: Значение в диапазоне [-1.0, 1.0]; при ошибке возвращается 0.0.
+    """
     if not text or len(text.strip()) < 3:
         return 0.0
     try:
         blob = TextBlob(text)
         polarity = blob.sentiment.polarity
         return float(max(-1.0, min(1.0, round(polarity, 4))))
-    except Exception:
+    except (AttributeError, ValueError, TypeError) as e:
+        log.debug("Ошибка расчёта sentiment: %s", e)
         return 0.0
 
 
-def extract_text_features(text: str) -> dict[str, float]:
-    """Извлекает признаки из одного текста (для Spark UDF/единичных запросов)."""
+def _compute_single_text_features(text: str) -> dict[str, float]:
+    """Вычисляет признаки для одного текста. Единственный источник истины."""
     if not text or not isinstance(text, str):
         return {
             "text_len": 0.0,
@@ -47,9 +57,9 @@ def extract_text_features(text: str) -> dict[str, float]:
             "exclamation_count": 0.0,
             "caps_ratio": 0.0,
             "question_count": 0.0,
+            "avg_word_length": 0.0,
         }
 
-    # NOTE: Логика должна совпадать с extract_basic_text_features
     text_len = float(len(text))
     words = text.split()
     word_count = float(len(words))
@@ -58,6 +68,7 @@ def extract_text_features(text: str) -> dict[str, float]:
     question_count = float(text.count("?"))
     caps_count = sum(1 for c in text if c.isupper())
     caps_ratio = caps_count / max(text_len, 1.0)
+    avg_word_length = text_len / max(word_count, 1.0)
 
     return {
         "text_len": text_len,
@@ -66,7 +77,13 @@ def extract_text_features(text: str) -> dict[str, float]:
         "exclamation_count": exclamation_count,
         "caps_ratio": caps_ratio,
         "question_count": question_count,
+        "avg_word_length": avg_word_length,
     }
+
+
+def extract_text_features(text: str) -> dict[str, float]:
+    """Извлекает признаки из одного текста (для Spark UDF/единичных запросов)."""
+    return _compute_single_text_features(text)
 
 
 def get_spark_clean_udf():
@@ -96,22 +113,23 @@ def calculate_sentiment_series(s: pd.Series) -> pd.Series:
 
 
 def extract_basic_text_features(clean_series: pd.Series) -> pd.DataFrame:
-    """Векторизованное извлечение признаков для pandas (для обучения/батч-предикта)."""
+    """Векторизованное извлечение признаков для pandas (для обучения/батч-предикта).
+
+    Возвращаем высокопроизводительную реализацию на базе pandas-операций,
+    эквивалентную логике _compute_single_text_features.
+    """
     s = clean_series.fillna("")
 
     text_len = s.str.len().astype(float)
     word_count = s.str.split().str.len().fillna(0).astype(float)
-
     kindle_freq = s.str.count("kindle", flags=re.IGNORECASE).astype(float)
     exclamation_count = s.str.count("!").astype(float)
-
-    # Оптимизированный подсчет заглавных
-    caps_ratio = (
-        s.str.replace(r"[^A-Z]", "", regex=True).str.len().astype(float)
-        / text_len.clip(lower=1.0)
-    ).fillna(0.0)
-
     question_count = s.str.count(r"\?").astype(float)
+
+    # Подсчёт заглавных букв и доли заглавных
+    caps_count = s.str.replace(r"[^A-Z]", "", regex=True).str.len().astype(float)
+    caps_ratio = (caps_count / text_len.clip(lower=1.0)).fillna(0.0)
+
     avg_word_length = (text_len / word_count.clip(lower=1.0)).astype(float)
 
     return pd.DataFrame(

@@ -16,7 +16,7 @@ resp.raise_for_status()
 data = resp.json()
 
 print("Predictions:")
-for i, (text, label) in enumerate(zip(texts, data["labels"], strict=False)):
+for i, (text, label) in enumerate(zip(texts, data["labels"])):
     preview = text[:60] + "..." if len(text) > 60 else text
     print(f"{i + 1}. {preview} -> Rating: {label}")
 

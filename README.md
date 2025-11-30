@@ -16,8 +16,8 @@
     * Очистка текста и балансировка классов.
     * Генерация признаков (TF-IDF + статистические фичи).
     * *Особенность*: Используется Spark для горизонтального масштабирования ETL.
-3. **Training**: Параллельное обучение нескольких моделей (Sklearn, LightGBM) через `joblib`.
-4. **Evaluation**: Выбор лучшей модели по метрикам (F1-score, Latency) и регистрация в MLflow.
+3. **Training**: Обучение нескольких моделей (LogReg, RandomForest, HistGradientBoosting, MLP, DistilBERT) с HPO через Optuna.
+4. **Evaluation**: Выбор лучшей модели по метрикам (F1-score) и регистрация в MLflow.
 
 ### Inference Service (FastAPI)
 
@@ -42,11 +42,12 @@
 
 ### 2. "Raw" vs "Clean" Features
 
-Мы извлекаем признаки на двух этапах:
+Признаки извлекаются на двух этапах:
 
 1. **По сырому тексту**: `caps_ratio`, `exclamation_count`, `question_count` (важны для эмоций).
 2. **По очищенному тексту**: TF-IDF, Word Count (важны для семантики).
-*Ранее был баг, когда все признаки считались по очищенному тексту (где удалена пунктуация и регистр), что обнуляло важные сигналы. Исправлено.*
+
+Это разделение сохраняет эмоциональные сигналы (пунктуация, регистр), которые теряются при очистке текста.
 
 ### 3. Drift Monitoring
 
@@ -89,26 +90,68 @@ pytest tests/
 pytest tests/test_feature_consistency.py
 ```
 
-## ⚠️ Known Issues & Roadmap (TODO)
+### Разработка
 
-Честный список того, что еще предстоит сделать для Production-grade состояния:
+```bash
+# Установка dev-зависимостей
+pip install -r requirements.dev.txt
 
-1. **Config Management**: Сейчас часть параметров (например, лимиты классов) захардкожены в `config.py` или `spark_process.py`. Нужно вынести всё в `.env` или Hydra.
-2. **CI/CD**: Настроен только линтинг. Нужен полноценный пайплайн с прогоном тестов и сборкой Docker-образов.
-3. **Spark Optimization**: Текущая конфигурация Spark (local mode) не оптимизирована под кластер.
-4. **Security**: Секреты (пароли БД) передаются через env-файлы, для продакшена нужен Vault.
+# Настройка pre-commit hooks
+pre-commit install
+
+# Запуск линтеров вручную
+pre-commit run --all-files
+```
 
 ## Структура проекта
 
 ```
-├── airflow/dags/       # DAGs для оркестрации
+sentiment-mlops-pipeline/
+├── airflow/
+│   └── dags/
+│       └── kindle_pipeline.py  # Единый DAG с параметризацией
 ├── scripts/
-│   ├── api_service.py          # FastAPI app
-│   ├── spark_process.py        # ETL logic (Spark)
-│   ├── feature_engineering.py  # Shared feature logic (Core!)
-│   ├── train.py                # Training script
-│   └── drift_monitor.py        # Drift detection
-├── tests/              # Pytest tests
-├── docker-compose.yml  # Infra definition
-└── README.md           # This file
+│   ├── api/                    # FastAPI модуль
+│   │   ├── app.py              # Фабрика приложения
+│   │   ├── routers.py          # Эндпоинты
+│   │   ├── schemas.py          # Pydantic-схемы
+│   │   ├── middleware.py       # Timeout, tracing
+│   │   ├── rate_limiter.py     # Slowapi rate limiting (Redis/in-memory)
+│   │   └── metrics.py          # Prometheus-метрики
+│   ├── models/
+│   │   ├── distilbert.py       # DistilBERT классификатор
+│   │   └── kinds.py            # Enum типов моделей
+│   ├── train_modules/
+│   │   ├── data_loading.py     # Загрузка splits
+│   │   ├── evaluation.py       # Метрики оценки
+│   │   ├── feature_analysis.py # Анализ важности признаков
+│   │   ├── optuna_optimizer.py # HPO с Optuna
+│   │   └── pipeline_builders.py # Фабрика пайплайнов
+│   ├── config.py               # Централизованная конфигурация
+│   ├── artefact_store.py       # Атомарная запись артефактов
+│   ├── feature_engineering.py  # Единая логика признаков
+│   ├── feature_contract.py     # Контракт признаков
+│   ├── drift_monitor.py        # Детекция дрейфа (PSI)
+│   ├── spark_process.py        # ETL логика (Spark)
+│   ├── train.py                # Обучение моделей
+│   └── model_service.py        # Сервис инференса
+├── tests/
+│   ├── test_api_service.py     # Тесты API
+│   ├── test_core_modules.py    # Unit-тесты модулей
+│   ├── test_feature_consistency.py  # Training-Serving Skew тесты
+│   └── test_integration.py     # Интеграционные тесты
+├── artefacts/                  # Модели и артефакты
+├── data/                       # Данные (raw/processed)
+├── grafana/                    # Dashboards для Grafana
+├── docker-compose.yml          # Инфраструктура
+├── pyproject.toml              # Конфигурация инструментов
+├── .pre-commit-config.yaml     # Pre-commit hooks
+└── README.md
 ```
+
+## Известные ограничения
+
+1. **Rate limiting** — по умолчанию in-memory. Для multi-worker deployment задайте `REDIS_URL`.
+2. **MLflow artifacts** хранятся локально. Для продакшена рекомендуется S3/GCS.
+
+

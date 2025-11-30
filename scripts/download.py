@@ -12,7 +12,6 @@ from tenacity import (
     wait_exponential,
 )
 
-
 from scripts.config import (
     CSV_NAME,
     FORCE_DOWNLOAD,
@@ -24,7 +23,7 @@ from scripts.logging_config import get_logger
 ZIP_FILENAME = RAW_DATA_DIR / "kindle-reviews.zip"
 CSV_PATH = RAW_DATA_DIR / CSV_NAME
 
-log = get_logger("download")
+log = get_logger(__name__)
 
 
 @retry(
@@ -60,7 +59,7 @@ def main(force: bool = False) -> Path:
 
     if CSV_PATH.exists() and not force:
         log.warning(
-            "%s уже существует, пропуск скачивания. Для форсированного скачивания используйте force=True",
+            "%s уже существует, пропуск. Используйте force=True для повторной загрузки",
             CSV_NAME,
         )
         log.info("Абсолютный путь к CSV: %s", str(CSV_PATH.resolve()))
@@ -70,7 +69,7 @@ def main(force: bool = False) -> Path:
         RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     except PermissionError as e:
         log.error(
-            "Нет прав на создание каталога '%s': %s. Проверьте монтирование volume и права на запись.",
+            "Нет прав на создание '%s': %s. Проверьте volume и права на запись.",
             str(RAW_DATA_DIR),
             e,
         )
@@ -93,16 +92,12 @@ def main(force: bool = False) -> Path:
     try:
         with ZipFile(str(ZIP_FILENAME), "r") as zip_ref:
             zip_ref.extract(CSV_NAME, str(RAW_DATA_DIR))
-    except Exception as e:
+    except (OSError, KeyError) as e:
         log.error("Ошибка при распаковке архива: %s", e)
         raise
 
     with contextlib.suppress(FileNotFoundError):
         ZIP_FILENAME.unlink()
-
-    # NOTE: Ранее здесь было удаление индексной колонки через pandas.
-    # Это неэффективно для больших файлов и дублирует логику Spark.
-    # Spark при чтении сам может отфильтровать лишние колонки.
 
     resolved = CSV_PATH.resolve()
     log.info("Готово. Абсолютный путь к CSV: %s", str(resolved))

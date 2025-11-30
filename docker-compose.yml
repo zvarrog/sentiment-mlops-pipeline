@@ -1,170 +1,173 @@
 services:
-    postgres:
-        image: postgres:15
-        environment:
-            POSTGRES_USER: ${POSTGRES_USER:-admin}
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-            POSTGRES_DB: optuna
-            POSTGRES_MULTIPLE_DATABASES: airflow_meta,metrics
-        ports:
-            - '5432:5432'
-        volumes:
-            - pgdata:/var/lib/postgresql/data
-            - ./postgres-init:/docker-entrypoint-initdb.d:ro
-        healthcheck:
-            test: [ 'CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-admin} -d optuna' ]
-            interval: 5s
-            timeout: 5s
-            retries: 10
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: optuna
+      POSTGRES_MULTIPLE_DATABASES: airflow_meta,metrics
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ 'CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-admin} -d optuna' ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-    mlflow:
-        image: ghcr.io/mlflow/mlflow:v2.14.1
-        ports:
-            - '5000:5000'
-        volumes:
-            - mlruns_data:/mlflow
-        environment:
-            MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/mlflow.db
-            MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
-        command: >
-            mlflow server --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts --host 0.0.0.0
-        healthcheck:
-            test: [ 'CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:5000/health")' ]
-            interval: 10s
-            timeout: 5s
-            retries: 5
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    ports:
+      - '5000:5000'
+    volumes:
+      - mlruns_data:/mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/mlflow.db
+      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+    command: >
+      mlflow server --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts --host 0.0.0.0
+    healthcheck:
+      test: [ 'CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:5000/health")' ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-    airflow:
-        build:
-            context: .
-            dockerfile: Dockerfile.airflow
-        env_file:
-            - .env
-        environment:
-            # Docker-специфичные переменные
-            AIRFLOW__CORE__EXECUTOR: LocalExecutor
-            AIRFLOW__CORE__PARALLELISM: '16' # общее число параллельных задач
-            AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: '8'
-            AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: '1'
-            AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
-            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow_meta'
-            AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
-            AIRFLOW_CONN_METRICS_DB: 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/metrics'
-            JAVA_HOME: /usr/lib/jvm/default-java
-            PYTHONPATH: /opt/airflow
-            GIT_PYTHON_REFRESH: 'quiet'
-            # MLflow и API endpoints для тестов
-            MLFLOW_TRACKING_URI: 'http://mlflow:5000'
-            API_URL: 'http://api:8000'
-        volumes:
-            - ./airflow/dags:/opt/airflow/dags:ro
-            - ./scripts:/opt/airflow/scripts:ro
-            - ./tests:/opt/airflow/tests:ro
-            - ./pytest.ini:/opt/airflow/pytest.ini:ro
-            - ./data:/opt/airflow/data
-            - ./artefacts:/opt/airflow/artefacts
-            - airflow_logs:/opt/airflow/logs
-            - ${KAGGLE_JSON:-./kaggle.json}:/home/airflow/.kaggle/kaggle.json:ro
-        # Опция GPU доступна (см. README по установке Nvidia Container Toolkit):
-        # gpus: all
-        ports:
-            - '8080:8080'
-        depends_on:
-            postgres:
-                condition: service_healthy
-            mlflow:
-                condition: service_healthy
-        logging:
-            driver: 'json-file'
-            options:
-                max-size: '10m'
-                max-file: '3'
-        healthcheck:
-            test: [ 'CMD', 'curl', '-f', 'http://localhost:8080/health' ]
-            interval: 30s
-            timeout: 10s
-            retries: 5
-            start_period: 60s
-        command: >-
-            bash -c "set -e; mkdir -p /opt/airflow/data/processed /opt/airflow/data/raw; chown -R 50000:0 /opt/airflow/data || chmod -R 777 /opt/airflow/data; rm -f /opt/airflow/airflow-webserver*.pid; airflow db migrate; airflow users list | grep -q admin@example.com || airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com; airflow webserver -p 8080 & echo 'Ожидание запуска Airflow UI...'; for i in {1..30}; do curl -sSf http://localhost:8080/health && break || sleep 2; done; echo 'Airflow UI доступен: http://localhost:8080 (admin/admin)'; exec airflow scheduler"
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    env_file:
+      - .env
+    environment:
+      # Docker-специфичные переменные
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__PARALLELISM: '16' # общее число параллельных задач
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: '8'
+      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: '1'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow_meta'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
+      AIRFLOW_CONN_METRICS_DB: 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/metrics'
+      JAVA_HOME: /usr/lib/jvm/default-java
+      PYTHONPATH: /opt/airflow
+      GIT_PYTHON_REFRESH: 'quiet'
+      # MLflow и API endpoints для тестов
+      MLFLOW_TRACKING_URI: 'http://mlflow:5000'
+      API_URL: 'http://api:8000'
+      LOG_RETENTION_DAYS: '7'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./airflow/entrypoint.sh:/opt/airflow/entrypoint.sh:ro
+      - ./scripts:/opt/airflow/scripts:ro
+      - ./tests:/opt/airflow/tests:ro
+      - ./pytest.ini:/opt/airflow/pytest.ini:ro
+      - ./data:/opt/airflow/data
+      - ./artefacts:/opt/airflow/artefacts
+      - airflow_logs:/opt/airflow/logs
+      - ${KAGGLE_JSON:-./kaggle.json}:/home/airflow/.kaggle/kaggle.json:ro
+    # Опция GPU доступна (см. README по установке Nvidia Container Toolkit):
+    # gpus: all
+    ports:
+      - '8080:8080'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    healthcheck:
+      test: [ 'CMD', 'curl', '-f', 'http://localhost:8080/health' ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    entrypoint: [ '/opt/airflow/entrypoint.sh' ]
 
-    api:
-        build:
-            context: .
-            dockerfile: Dockerfile.api
-        image: kindle_api
-        depends_on:
-            airflow:
-                condition: service_started
-        ports:
-            - '8000:8000'
-        volumes:
-            # Путь должен совпадать с MODEL_DIR/ARTEFACTS_DIR в настройках приложения
-            - ./artefacts:/app/artefacts:ro
-        security_opt:
-            - no-new-privileges:true
-        read_only: true
-        tmpfs:
-            - /tmp
-        cap_drop:
-            - ALL
-        logging:
-            driver: 'json-file'
-            options:
-                max-size: '10m'
-                max-file: '3'
-        healthcheck:
-            test: [ 'CMD', 'curl', '-f', 'http://localhost:8000/ready' ]
-            interval: 10s
-            timeout: 5s
-            retries: 5
-            start_period: 10s
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: kindle_api
+    depends_on:
+      airflow:
+        condition: service_started
+    ports:
+      - '8000:8000'
+    volumes:
+      # Путь должен совпадать с MODEL_DIR/ARTEFACTS_DIR в настройках приложения
+      - ./artefacts:/app/artefacts:ro
+    environment:
+      LOG_RETENTION_DAYS: '7'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    healthcheck:
+      test: [ 'CMD', 'curl', '-f', 'http://localhost:8000/ready' ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
-    prometheus:
-        image: prom/prometheus:v2.45.0
-        ports:
-            - '9090:9090'
-        volumes:
-            - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-            - prometheus_data:/prometheus
-        command:
-            - '--config.file=/etc/prometheus/prometheus.yml'
-            - '--storage.tsdb.path=/prometheus'
-            - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-            - '--web.console.templates=/usr/share/prometheus/consoles'
-        depends_on:
-            - api
-        restart: unless-stopped
-        healthcheck:
-            test: [ 'CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:9090/-/healthy' ]
-            interval: 10s
-            timeout: 5s
-            retries: 3
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    depends_on:
+      - api
+    restart: unless-stopped
+    healthcheck:
+      test: [ 'CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:9090/-/healthy' ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-    grafana:
-        image: grafana/grafana:10.0.0
-        ports:
-            - '3000:3000'
-        volumes:
-            - grafana_data:/var/lib/grafana
-            - ./grafana/provisioning:/etc/grafana/provisioning:ro
-        environment:
-            GF_SECURITY_ADMIN_USER: admin
-            GF_SECURITY_ADMIN_PASSWORD: admin
-            GF_INSTALL_PLUGINS: ''
-            GF_PATHS_PROVISIONING: /etc/grafana/provisioning
-        depends_on:
-            - prometheus
-        restart: unless-stopped
-        healthcheck:
-            test: [ 'CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000/api/health' ]
-            interval: 10s
-            timeout: 5s
-            retries: 3
+  grafana:
+    image: grafana/grafana:10.0.0
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: ''
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    healthcheck:
+      test: [ 'CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000/api/health' ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
-    pgdata:
-    mlruns_data:
-    airflow_logs:
-    prometheus_data:
-    grafana_data:
+  pgdata:
+  mlruns_data:
+  airflow_logs:
+  prometheus_data:
+  grafana_data:

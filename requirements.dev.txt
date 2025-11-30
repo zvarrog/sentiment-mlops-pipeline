@@ -1,0 +1,9 @@
+# Dev dependencies для разработки и CI
+ruff==0.3.4
+black==24.3.0
+mypy==1.9.0
+pre-commit==3.7.0
+types-requests==2.31.0.20240406
+pandas-stubs==2.2.1.240316
+coverage==7.4.4
+pytest-cov==5.0.0

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -44,58 +41,44 @@ def to_bool(x: Any, default: bool = False) -> bool:
     return bool(default)
 
 
-def get_value(context: dict, name: str, default: str | None = None) -> str:
+def get_value(context: dict[str, Any], name: str, default: str | None = None) -> str:
     """Извлекает строковое значение из контекста Airflow (params, dag_run.conf, dag.params)."""
     params = context.get("params") or {}
     if name in params:
         return str(params.get(name))
     dag_run = context.get("dag_run")
-    if getattr(dag_run, "conf", None) and name in dag_run.conf:
-        return str(dag_run.conf.get(name))
+    conf = getattr(dag_run, "conf", None)
+    if conf is not None and name in conf:
+        return str(conf.get(name))
     dag = context.get("dag")
     if dag and name in getattr(dag, "params", {}):
         return str(dag.params.get(name))
     return str(default or "")
 
 
-def get_flag(context: dict, name: str, default: bool = False) -> bool:
-    """Извлекает булево значение из контекста Airflow."""
-    params = context.get("params") or {}
-    if name in params:
-        return to_bool(params.get(name), default)
-    dag_run = context.get("dag_run")
-    if getattr(dag_run, "conf", None) and name in dag_run.conf:
-        return to_bool(dag_run.conf.get(name), default)
-    dag = context.get("dag")
-    if dag and name in getattr(dag, "params", {}):
-        return to_bool(dag.params.get(name), default)
-    return bool(default)
+def get_flag(context: dict[str, Any], name: str, default: bool = False) -> bool:
+    """Извлекает булево значение из контекста Airflow.
+
+    Использует get_value как единый источник извлечения строки,
+    затем приводит к булеву через to_bool.
+    """
+    raw = get_value(context, name, str(default).lower())
+    return to_bool(raw, default)
 
 
-def atomic_write_json(path: str | Path, data: dict, **kwargs: Any) -> None:
-    """Атомарная запись JSON-файла через временный файл."""
-    path_obj = Path(path)
-    temp_path = path_obj.with_suffix(path_obj.suffix + ".tmp")
+def get_model_input(pipeline, x_data: pd.DataFrame) -> pd.DataFrame | pd.Series:
+    """Определяет правильный input для модели.
 
-    try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=kwargs.get("indent", 2))
-        os.replace(temp_path, path_obj)
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+    Пайплайны с препроцессором ('pre') принимают полный DataFrame,
+    остальные (text-only) — только колонку reviewText.
 
+    Args:
+        pipeline: Обученный sklearn Pipeline.
+        x_data: DataFrame с данными.
 
-def atomic_write_parquet(path: str | Path, df: pd.DataFrame, **kwargs: Any) -> None:
-    """Атомарная запись Parquet-файла через временный файл."""
-    path_obj = Path(path)
-    temp_path = path_obj.with_suffix(path_obj.suffix + ".tmp")
-
-    try:
-        df.to_parquet(temp_path, **kwargs)
-        os.replace(temp_path, path_obj)
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+    Returns:
+        DataFrame или Series в зависимости от типа пайплайна.
+    """
+    if "pre" in getattr(pipeline, "named_steps", {}):
+        return x_data
+    return x_data["reviewText"]

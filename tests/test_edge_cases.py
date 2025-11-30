@@ -190,5 +190,3 @@ class TestDataValidationCornerCases:
         assert not any("пуст" in e.lower() for e in errors)
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

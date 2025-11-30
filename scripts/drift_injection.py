@@ -4,17 +4,11 @@ from pathlib import Path
 
 import pandas as pd
 
-# Опциональный импорт pyarrow, так как он может быть не установлен
-try:
-    import pyarrow.dataset as ds
-except ImportError:
-    ds = None
-
+from scripts.artefact_store import artefact_store
 from scripts.config import DATA_PATHS, INJECT_SYNTHETIC_DRIFT, NUMERIC_COLS
 from scripts.logging_config import get_logger
-from scripts.utils import atomic_write_parquet
 
-log = get_logger("drift_injection")
+log = get_logger(__name__)
 
 
 def inject_synthetic_drift(
@@ -51,9 +45,7 @@ def inject_synthetic_drift(
         if changed_columns:
             _save_modified_data(df, test_path)
 
-            success_msg = (
-                f"Синтетический дрейф применён к колонкам: {', '.join(changed_columns)}"
-            )
+            success_msg = f"Синтетический дрейф применён к колонкам: {', '.join(changed_columns)}"
             log.warning(success_msg)
             return {
                 "status": "success",
@@ -69,21 +61,14 @@ def inject_synthetic_drift(
                 "changed_columns": [],
             }
 
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         error_msg = f"Ошибка при инъекции синтетического дрейфа: {e}"
         log.error(error_msg)
         return {"status": "error", "message": error_msg, "changed_columns": []}
 
 
 def _load_parquet_data(test_path: Path) -> pd.DataFrame:
-    """Загружает данные из parquet файла или директории."""
-    if ds is not None:
-        try:
-            dataset = ds.dataset(str(test_path))
-            table = dataset.to_table()
-            return table.to_pandas()
-        except Exception:
-            pass
+    """Загружает данные из parquet файла."""
     return pd.read_parquet(test_path)
 
 
@@ -114,7 +99,7 @@ def _apply_synthetic_drift(df: pd.DataFrame) -> list[str]:
                 changed_columns.append(col)
                 log.debug("Применён дрейф к колонке '%s'", col)
 
-            except Exception as e:
+            except (ValueError, TypeError, KeyError) as e:
                 log.warning("Не удалось применить дрейф к колонке '%s': %s", col, e)
 
     return changed_columns
@@ -122,7 +107,7 @@ def _apply_synthetic_drift(df: pd.DataFrame) -> list[str]:
 
 def _save_modified_data(df: pd.DataFrame, original_path: Path) -> None:
     """Атомарно заменяет оригинальные данные модифицированными."""
-    atomic_write_parquet(original_path, df)
+    artefact_store.save_parquet(original_path, df)
 
 
 def main() -> dict[str, str | list[str]]:
