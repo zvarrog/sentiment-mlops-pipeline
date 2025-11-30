@@ -4,10 +4,13 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 import pandas as pd
 
-REQUIRED_TEXT_COL = "reviewText"
-OUTLIER_SIGMAS = 3  # число сигм для детекции выбросов
+from scripts.config import OUTLIER_SIGMAS, REQUIRED_TEXT_COL
+from scripts.logging_config import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -22,10 +25,15 @@ class FeatureContract:
     baseline_stats: dict[str, dict[str, float]] | None = None
 
     @classmethod
-    def from_model_artifacts(cls, model_artefact_dir: Path) -> "FeatureContract":
+    def from_model_artifacts(
+        cls,
+        model_artefact_dir: Path,
+        baseline_filename: str = "baseline_numeric_stats.json",
+        schema_filename: str = "model_schema.json",
+    ) -> "FeatureContract":
         """Строит контракт на основе baseline_numeric_stats.json и/или model_schema.json."""
-        baseline_path = model_artefact_dir / "baseline_numeric_stats.json"
-        schema_path = model_artefact_dir / "model_schema.json"
+        baseline_path = model_artefact_dir / baseline_filename
+        schema_path = model_artefact_dir / schema_filename
         baseline_stats: dict[str, dict[str, float]] | None = None
         expected_numeric: list[str] = []
 
@@ -34,8 +42,8 @@ class FeatureContract:
                 baseline_stats = json.loads(baseline_path.read_text(encoding="utf-8"))
                 if isinstance(baseline_stats, dict) and baseline_stats:
                     expected_numeric = [str(k) for k in baseline_stats]
-            except (OSError, json.JSONDecodeError):
-                baseline_stats = None
+            except (OSError, json.JSONDecodeError) as e:
+                log.debug("Не удалось загрузить baseline stats: %s", e)
 
         if schema_path.exists():
             try:
@@ -43,9 +51,10 @@ class FeatureContract:
                 inp = schema.get("input", {}) if isinstance(schema, dict) else {}
                 used = inp.get("numeric_features") if isinstance(inp, dict) else None
                 if isinstance(used, list) and used:
-                    expected_numeric = [str(x) for x in used]
-            except (OSError, json.JSONDecodeError):
-                pass
+                    # Если уже загрузили из baseline, объединяем (хотя они должны совпадать)
+                    expected_numeric = list(set(expected_numeric) | {str(x) for x in used})
+            except (OSError, json.JSONDecodeError) as e:
+                log.debug("Не удалось загрузить model schema: %s", e)
 
         if not expected_numeric:
             raise RuntimeError(
@@ -53,7 +62,7 @@ class FeatureContract:
                 f"{baseline_path.name} или {schema_path.name}"
             )
 
-        return cls([REQUIRED_TEXT_COL], expected_numeric, baseline_stats)
+        return cls([REQUIRED_TEXT_COL], sorted(expected_numeric), baseline_stats)
 
     def validate_input_data(self, data: dict[str, Any] | pd.DataFrame) -> dict[str, list[str]]:
         """Возвращает словарь предупреждений по входным данным."""
@@ -103,8 +112,7 @@ class FeatureContract:
         info = {
             "required_text_columns": self.required_text_columns,
             "expected_numeric_columns": self.expected_numeric_columns,
-            "total_features": len(self.required_text_columns)
-            + len(self.expected_numeric_columns),
+            "total_features": len(self.required_text_columns) + len(self.expected_numeric_columns),
         }
 
         if self.baseline_stats:

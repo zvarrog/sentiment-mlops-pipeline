@@ -5,26 +5,25 @@ import subprocess
 from pathlib import Path
 from zipfile import ZipFile
 
-import pandas as pd
-try:
-    from tenacity import (
-        retry,
-        retry_if_exception_type,
-        stop_after_attempt,
-        wait_exponential,
-    )
-except ImportError as e:
-    raise ImportError(
-        "Отсутствует зависимость tenacity. Добавьте её в requirements или уберите retry-логику."
-    ) from e
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from .config import CSV_NAME, KAGGLE_DATASET, RAW_DATA_DIR
-from .logging_config import get_logger
+from scripts.config import (
+    CSV_NAME,
+    FORCE_DOWNLOAD,
+    KAGGLE_DATASET,
+    RAW_DATA_DIR,
+)
+from scripts.logging_config import get_logger
 
 ZIP_FILENAME = RAW_DATA_DIR / "kindle-reviews.zip"
 CSV_PATH = RAW_DATA_DIR / CSV_NAME
 
-log = get_logger("download")
+log = get_logger(__name__)
 
 
 @retry(
@@ -55,13 +54,12 @@ def _download_with_retry() -> None:
 
 def main(force: bool = False) -> Path:
     """Скачивание датасета Kaggle. Возвращает абсолютный путь к CSV."""
-    from .config import FORCE_DOWNLOAD
     if force is False:
         force = bool(FORCE_DOWNLOAD)
 
     if CSV_PATH.exists() and not force:
         log.warning(
-            "%s уже существует, пропуск скачивания. Для форсированного скачивания используйте force=True",
+            "%s уже существует, пропуск. Используйте force=True для повторной загрузки",
             CSV_NAME,
         )
         log.info("Абсолютный путь к CSV: %s", str(CSV_PATH.resolve()))
@@ -71,7 +69,7 @@ def main(force: bool = False) -> Path:
         RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     except PermissionError as e:
         log.error(
-            "Нет прав на создание каталога '%s': %s. Проверьте монтирование volume и права на запись.",
+            "Нет прав на создание '%s': %s. Проверьте volume и права на запись.",
             str(RAW_DATA_DIR),
             e,
         )
@@ -91,28 +89,19 @@ def main(force: bool = False) -> Path:
         raise
 
     log.info("Распаковывание архива %s...", str(ZIP_FILENAME))
-    with ZipFile(str(ZIP_FILENAME), "r") as zip_ref:
-        zip_ref.extract(CSV_NAME, str(RAW_DATA_DIR))
+    try:
+        with ZipFile(str(ZIP_FILENAME), "r") as zip_ref:
+            zip_ref.extract(CSV_NAME, str(RAW_DATA_DIR))
+    except (OSError, KeyError) as e:
+        log.error("Ошибка при распаковке архива: %s", e)
+        raise
 
     with contextlib.suppress(FileNotFoundError):
         ZIP_FILENAME.unlink()
 
-    _remove_leading_index_column()
-
     resolved = CSV_PATH.resolve()
     log.info("Готово. Абсолютный путь к CSV: %s", str(resolved))
     return resolved
-
-
-def _remove_leading_index_column(csv_path: Path = CSV_PATH) -> None:
-    """Удаляет лишний первый столбец-индекс в CSV, если он присутствует."""
-    df = pd.read_csv(str(csv_path))
-    first_col = str(df.columns[0])
-
-    if first_col in ("", "Unnamed: 0", "_c0") or first_col.startswith("Unnamed"):
-        df = df.iloc[:, 1:]
-        df.to_csv(csv_path, index=False)
-        log.info("Удалён индекс-столбец '%s'", first_col)
 
 
 if __name__ == "__main__":

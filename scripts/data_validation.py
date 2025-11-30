@@ -1,13 +1,15 @@
 """Валидация схемы и качества данных в parquet файлах."""
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
-# Используем централизованную систему логирования
-from .logging_config import get_logger
+from scripts.config import PROCESSED_DATA_DIR
+from scripts.logging_config import get_logger, setup_logging
 
 log = get_logger(__name__)
 
@@ -28,7 +30,7 @@ class DataSchema:
 
     required_columns: set[str]
     optional_columns: set[str]
-    column_types: dict[str, str]  # колонка -> ожидаемый тип
+    column_types: dict[str, str | list[str]]  # колонка -> ожидаемый тип
     numeric_ranges: dict[str, tuple]  # числовая колонка -> (min, max)
     text_constraints: dict[str, dict[str, Any]]  # текстовая колонка -> ограничения
 
@@ -40,7 +42,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len",
         "word_count",
         "kindle_freq",
-        "sentiment_score",
+        "sentiment",
         "has_punctuation",
         "avg_word_length",
         "upper_ratio",
@@ -50,7 +52,6 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "unixReviewTime",
         "asin",
         "reviewerID",
-        "sentiment",
         "words",
         "user_review_count",
         "item_review_count",
@@ -74,7 +75,7 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len": ["float32"],
         "word_count": ["float32"],
         "kindle_freq": ["float32"],
-        "sentiment_score": ["float64", "int32"],
+        "sentiment": ["float64", "float32"],
         "has_punctuation": ["float64", "int32"],
         "avg_word_length": ["float64", "int32"],
         "upper_ratio": ["float64", "int32"],
@@ -85,21 +86,17 @@ KINDLE_REVIEWS_SCHEMA = DataSchema(
         "text_len": (0, 50000),
         "word_count": (0, 10000),
         "kindle_freq": (0.0, 50.0),
-        "sentiment_score": (-1.0, 1.0),
+        "sentiment": (-1.0, 1.0),
         "has_punctuation": (0.0, 1.0),
         "avg_word_length": (0.0, 50.0),
         "upper_ratio": (0.0, 1.0),
         "digit_ratio": (0.0, 1.0),
     },
-    text_constraints={
-        "reviewText": {"min_length": 1, "max_length": 100000, "allow_null": False}
-    },
+    text_constraints={"reviewText": {"min_length": 1, "max_length": 100000, "allow_null": False}},
 )
 
 
-def validate_column_schema(
-    df: pd.DataFrame, schema: DataSchema
-) -> tuple[list[str], list[str]]:
+def validate_column_schema(df: pd.DataFrame, schema: DataSchema) -> tuple[list[str], list[str]]:
     """Проверка схемы колонок."""
     errors = []
     warnings = []
@@ -116,14 +113,10 @@ def validate_column_schema(
             # Поддерживаем как один тип, так и список типов
             if isinstance(expected_types, list):
                 if actual_type not in expected_types:
-                    warnings.append(
-                        f"Колонка '{col}': ожидался один из типов {expected_types}, найден {actual_type}"
-                    )
+                    warnings.append(f"'{col}': ожидался {expected_types}, найден {actual_type}")
             else:
                 if actual_type != expected_types:
-                    warnings.append(
-                        f"Колонка '{col}': ожидался тип {expected_types}, найден {actual_type}"
-                    )
+                    warnings.append(f"'{col}': ожидался {expected_types}, найден {actual_type}")
 
     # Неожиданные колонки
     all_expected = schema.required_columns | schema.optional_columns
@@ -134,9 +127,7 @@ def validate_column_schema(
     return errors, warnings
 
 
-def validate_data_quality(
-    df: pd.DataFrame, schema: DataSchema
-) -> tuple[list[str], list[str]]:
+def validate_data_quality(df: pd.DataFrame, schema: DataSchema) -> tuple[list[str], list[str]]:
     """Проверка качества данных."""
     errors = []
     warnings = []
@@ -160,9 +151,7 @@ def validate_data_quality(
             if numeric_data.isnull().any():
                 non_numeric_count = numeric_data.isnull().sum() - df[col].isnull().sum()
                 if non_numeric_count > 0:
-                    warnings.append(
-                        f"Колонка '{col}': {non_numeric_count} не-числовых значений"
-                    )
+                    warnings.append(f"Колонка '{col}': {non_numeric_count} не-числовых значений")
 
             valid_data = numeric_data.dropna()
             if len(valid_data) > 0:
@@ -183,9 +172,7 @@ def validate_data_quality(
             text_data = df[col].astype(str)
 
             if not constraints.get("allow_null", True):
-                null_or_empty = (
-                    df[col].isnull() | (text_data == "") | (text_data == "nan")
-                ).sum()
+                null_or_empty = (df[col].isnull() | (text_data == "") | (text_data == "nan")).sum()
                 if null_or_empty > 0:
                     errors.append(f"Колонка '{col}': {null_or_empty} пустых значений")
 
@@ -244,9 +231,7 @@ def validate_data_consistency(
         extra_cols = schema - reference_schema
 
         if missing_cols:
-            warnings.append(
-                f"В '{name}' отсутствуют колонки из '{reference_name}': {missing_cols}"
-            )
+            warnings.append(f"В '{name}' отсутствуют колонки из '{reference_name}': {missing_cols}")
         if extra_cols:
             warnings.append(f"В '{name}' есть дополнительные колонки: {extra_cols}")
 
@@ -297,7 +282,7 @@ def validate_parquet_file(
         for col, dtype in df.dtypes.items():
             try:
                 safe_dtypes[col] = str(dtype)
-            except Exception:
+            except (TypeError, ValueError):
                 safe_dtypes[col] = "complex_type"
 
         schema_info.update(
@@ -322,39 +307,34 @@ def validate_parquet_file(
 
         # Проверка дубликатов
         if check_duplicates and len(df) > 0:
-            import numpy as np
-
             try:
-                # Преобразуем все нехэшируемые типы в хэшируемые
-                df_for_dupes = df.copy()
-                for col in df_for_dupes.columns:
-                    # Детектируем нехэшируемые типы в первых строках
-                    sample_vals = df_for_dupes[col].dropna().head(10)
-                    if len(sample_vals) > 0:
-                        has_unhashable = any(
-                            isinstance(x, (np.ndarray, dict, list, set))
-                            for x in sample_vals
-                        )
-                        if has_unhashable:
-                            df_for_dupes[col] = df_for_dupes[col].apply(
-                                lambda x: str(x) if x is not None else None
-                            )
-                duplicates = df_for_dupes.duplicated().sum()
+                # Оптимизированная проверка: используем subset только из хэшируемых колонок
+                # или исключаем заведомо проблемные (списки, массивы)
+                hashable_cols = []
+                for col in df.columns:
+                    # Простая эвристика: если тип object, проверяем первый элемент
+                    if df[col].dtype == "object":
+                        first_val = df[col].iloc[0] if len(df) > 0 else None
+                        if isinstance(first_val, (list, dict, np.ndarray, set)):
+                            continue
+                    hashable_cols.append(col)
+
+                duplicates = df.duplicated(subset=hashable_cols).sum()
                 if duplicates > 0:
-                    warnings.append(f"Найдено {duplicates} дублированных строк")
+                    warnings.append(
+                        f"Найдено {duplicates} дублированных строк (по хэшируемым колонкам)"
+                    )
                     schema_info["duplicates"] = duplicates
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 warnings.append(f"Не удалось проверить дубликаты: {e}")
                 schema_info["duplicates"] = "error_checking"
 
         # Дополнительная статистика
         if "overall" in df.columns:
             try:
-                schema_info["rating_distribution"] = (
-                    df["overall"].value_counts().to_dict()
-                )
-            except Exception:
-                schema_info["rating_distribution"] = "error_calculating"
+                schema_info["rating_distribution"] = df["overall"].value_counts().to_dict()
+            except (ValueError, TypeError) as e:
+                schema_info["rating_distribution"] = f"error_calculating: {e}"
 
         if "reviewText" in df.columns:
             try:
@@ -364,10 +344,10 @@ def validate_parquet_file(
                     "max_text_length": df["reviewText"].astype(str).str.len().max(),
                 }
                 schema_info["text_stats"] = text_stats
-            except Exception:
-                schema_info["text_stats"] = "error_calculating"
+            except (ValueError, TypeError) as e:
+                schema_info["text_stats"] = f"error_calculating: {e}"
 
-    except Exception as e:
+    except (OSError, ValueError) as e:
         errors.append(f"Ошибка чтения файла: {e}")
         schema_info["error"] = str(e)
 
@@ -384,7 +364,7 @@ def validate_parquet_dataset(
     check_consistency: bool = True,
 ) -> dict[str, DataValidationResult]:
     """Валидация полного набора parquet файлов (train/val/test)."""
-    log.info(f"Валидация dataset в директории: {data_dir}")
+    log.info("Валидация dataset в директории: %s", data_dir)
 
     results = {}
     dataframes = {}
@@ -401,12 +381,14 @@ def validate_parquet_dataset(
             if result.is_valid and check_consistency:
                 try:
                     dataframes[split_name] = pd.read_parquet(file_path)
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     log.warning(
-                        f"Не удалось загрузить {split_name} для проверки консистентности: {e}"
+                        "Не удалось загрузить %s для проверки консистентности: %s",
+                        split_name,
+                        e,
                     )
         else:
-            log.warning(f"Файл {file_path} не найден")
+            log.warning("Файл %s не найден", file_path)
             results[split_name] = DataValidationResult(
                 is_valid=False,
                 errors=[f"Файл не найден: {file_path}"],
@@ -438,27 +420,27 @@ def log_validation_results(results: dict[str, DataValidationResult]) -> bool:
     all_valid = True
 
     for name, result in results.items():
-        log.info(f"\nВалидация '{name}':")
-        log.info(f"  Статус: {'Успешно' if result.is_valid else 'Ошибки'}")
+        log.info("Валидация '%s':", name)
+        log.info("  Статус: %s", "Успешно" if result.is_valid else "Ошибки")
 
         if result.errors:
             all_valid = False
-            log.error(f"  Ошибки ({len(result.errors)}):")
+            log.error("  Ошибки (%d):", len(result.errors))
             for error in result.errors:
-                log.error(f"    - {error}")
+                log.error("    - %s", error)
 
         if result.warnings:
-            log.warning(f"  Предупреждения ({len(result.warnings)}):")
+            log.warning("  Предупреждения (%d):", len(result.warnings))
             for warning in result.warnings:
-                log.warning(f"    - {warning}")
+                log.warning("    - %s", warning)
 
         # Краткая статистика
         if "rows" in result.schema_info:
-            log.info(f"  Строк: {result.schema_info['rows']:,}")
+            log.info("  Строк: %s", f"{result.schema_info['rows']:,}")
         if "columns" in result.schema_info:
-            log.info(f"  Колонок: {len(result.schema_info['columns'])}")
+            log.info("  Колонок: %d", len(result.schema_info["columns"]))
         if "memory_usage_mb" in result.schema_info:
-            log.info(f"  Память: {result.schema_info['memory_usage_mb']:.1f} MB")
+            log.info("  Память: %.1f MB", result.schema_info["memory_usage_mb"])
 
     return all_valid
 
@@ -469,26 +451,21 @@ def main() -> bool:
     Выполняет валидацию всех parquet файлов в директории processed.
     Возвращает True если все валидации прошли успешно.
     """
-    from pathlib import Path
-
-    from scripts.config import PROCESSED_DATA_DIR
-    from scripts.logging_config import setup_auto_logging
-
-    log = setup_auto_logging()
+    setup_logging()
 
     try:
         processed_dir = Path(PROCESSED_DATA_DIR)
         if not processed_dir.exists():
-            log.error(f"Директория {processed_dir} не существует")
+            log.error("Директория %s не существует", processed_dir)
             return False
 
         # Собираем все parquet файлы
         parquet_files = list(processed_dir.glob("*.parquet"))
         if not parquet_files:
-            log.warning(f"Parquet файлы не найдены в {processed_dir}")
+            log.warning("Parquet файлы не найдены в %s", processed_dir)
             return True  # Не ошибка если файлов пока нет
 
-        log.info(f"Найдено {len(parquet_files)} parquet файлов для валидации")
+        log.info("Найдено %d parquet файлов для валидации", len(parquet_files))
 
         # Валидируем весь датасет
         results = validate_parquet_dataset(processed_dir)
@@ -503,13 +480,11 @@ def main() -> bool:
 
         return all_valid
 
-    except Exception as e:
-        log.error(f"Критическая ошибка при валидации данных: {e}")
+    except (OSError, ValueError, RuntimeError) as e:
+        log.error("Критическая ошибка при валидации данных: %s", e)
         return False
 
 
 if __name__ == "__main__":
-    import sys
-
     success = main()
     sys.exit(0 if success else 1)

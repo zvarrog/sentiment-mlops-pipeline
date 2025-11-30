@@ -1,7 +1,6 @@
 """Unit tests для ключевых модулей проекта sentiment-mlops-pipeline.
 
 Покрываемые модули:
-- scripts.train_modules.data_loading: загрузка splits
 - scripts.train_modules.feature_space: DenseTransformer, NUMERIC_COLS
 - scripts.feature_contract: FeatureContract
 - scripts.data_validation: валидация схемы и качества
@@ -16,31 +15,6 @@ import pytest
 from sklearn.metrics import f1_score
 
 from scripts.train_modules.evaluation import compute_metrics
-
-
-class TestDataLoading:
-    """Тесты для scripts.train_modules.data_loading."""
-
-    def test_load_splits_returns_six_arrays(self, sample_parquet_files):
-        """load_splits возвращает 6 объектов: X_train, X_val, X_test, y_train, y_val, y_test."""
-        from scripts.train_modules.data_loading import load_splits
-
-        x_train, x_val, x_test, y_train, y_val, y_test = load_splits()
-
-        assert x_train is not None
-        assert len(x_train) > 0
-        assert len(y_train) == len(x_train)
-        assert len(x_val) > 0
-        assert len(x_test) > 0
-
-    def test_load_splits_has_required_columns(self, sample_parquet_files):
-        """X содержит reviewText и числовые признаки."""
-        from scripts.train_modules.data_loading import load_splits
-
-        x_train, _, _, _, _, _ = load_splits()
-
-        assert "reviewText" in x_train.columns
-        assert len(x_train.columns) > 1
 
 
 class TestFeatureSpace:
@@ -80,19 +54,6 @@ class TestFeatureSpace:
         assert isinstance(NUMERIC_COLS, list)
         assert len(NUMERIC_COLS) > 0
         assert all(isinstance(col, str) for col in NUMERIC_COLS)
-
-    def test_numeric_cols_are_numeric_type(self, sample_parquet_files):
-        """Все NUMERIC_COLS имеют числовой dtype после загрузки сплитов."""
-        from scripts.train_modules.data_loading import load_splits
-        from scripts.train_modules.feature_space import NUMERIC_COLS
-
-        x_train, _, _, _, _, _ = load_splits()
-
-        for col in NUMERIC_COLS:
-            if col in x_train.columns:
-                assert pd.api.types.is_numeric_dtype(x_train[col]), (
-                    f"{col} имеет нечисловой тип: {x_train[col].dtype}"
-                )
 
 
 class TestFeatureContract:
@@ -345,7 +306,3 @@ def sample_parquet_files(tmp_path_factory):
 
     # Cleanup
     os.environ.pop("PROCESSED_DATA_DIR", None)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

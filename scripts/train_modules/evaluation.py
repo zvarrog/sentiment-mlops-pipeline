@@ -42,4 +42,4 @@ def log_confusion_matrix(y_true, y_pred, path: Path) -> None:
 
 def get_classification_report(y_true, y_pred) -> str:
     """Возвращает текстовый отчёт по классификации."""
-    return classification_report(y_true, y_pred)
+    return classification_report(y_true, y_pred, output_dict=False)

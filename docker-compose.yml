@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: optuna
       POSTGRES_MULTIPLE_DATABASES: airflow_meta,metrics
@@ -12,7 +12,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-admin} -d optuna']
+      test: [ 'CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-admin} -d optuna' ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -27,18 +27,9 @@ services:
       MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/mlflow.db
       MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
     command: >
-      mlflow server 
-      --backend-store-uri sqlite:///mlflow/mlflow.db
-      --default-artifact-root /mlflow/artifacts
-      --host 0.0.0.0
+      mlflow server --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts --host 0.0.0.0
     healthcheck:
-      test:
-        [
-          'CMD',
-          'python',
-          '-c',
-          'import urllib.request; urllib.request.urlopen("http://localhost:5000/health")',
-        ]
+      test: [ 'CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:5000/health")' ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,9 +53,16 @@ services:
       JAVA_HOME: /usr/lib/jvm/default-java
       PYTHONPATH: /opt/airflow
       GIT_PYTHON_REFRESH: 'quiet'
+      # MLflow и API endpoints для тестов
+      MLFLOW_TRACKING_URI: 'http://mlflow:5000'
+      API_URL: 'http://api:8000'
+      LOG_RETENTION_DAYS: '7'
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
+      - ./airflow/entrypoint.sh:/opt/airflow/entrypoint.sh:ro
       - ./scripts:/opt/airflow/scripts:ro
+      - ./tests:/opt/airflow/tests:ro
+      - ./pytest.ini:/opt/airflow/pytest.ini:ro
       - ./data:/opt/airflow/data
       - ./artefacts:/opt/airflow/artefacts
       - airflow_logs:/opt/airflow/logs
@@ -84,23 +82,12 @@ services:
         max-size: '10m'
         max-file: '3'
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health']
+      test: [ 'CMD', 'curl', '-f', 'http://localhost:8080/health' ]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
-    command: >-
-      bash -c "set -e;
-      mkdir -p /opt/airflow/data/processed /opt/airflow/data/raw;
-      chown -R 50000:0 /opt/airflow/data || chmod -R 777 /opt/airflow/data;
-      rm -f /opt/airflow/airflow-webserver*.pid;
-      airflow db migrate;
-      airflow users list | grep -q admin@example.com || airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com;
-      airflow webserver -p 8080 &
-      echo 'Ожидание запуска Airflow UI...';
-      for i in {1..30}; do curl -sSf http://localhost:8080/health && break || sleep 2; done;
-      echo 'Airflow UI доступен: http://localhost:8080 (admin/admin)';
-      exec airflow scheduler"
+    entrypoint: [ '/opt/airflow/entrypoint.sh' ]
 
   api:
     build:
@@ -115,6 +102,8 @@ services:
     volumes:
       # Путь должен совпадать с MODEL_DIR/ARTEFACTS_DIR в настройках приложения
       - ./artefacts:/app/artefacts:ro
+    environment:
+      LOG_RETENTION_DAYS: '7'
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -128,7 +117,7 @@ services:
         max-size: '10m'
         max-file: '3'
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8000/ready']
+      test: [ 'CMD', 'curl', '-f', 'http://localhost:8000/ready' ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -150,15 +139,7 @@ services:
       - api
     restart: unless-stopped
     healthcheck:
-      test:
-        [
-          'CMD',
-          'wget',
-          '--quiet',
-          '--tries=1',
-          '--spider',
-          'http://localhost:9090/-/healthy',
-        ]
+      test: [ 'CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:9090/-/healthy' ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -179,15 +160,7 @@ services:
       - prometheus
     restart: unless-stopped
     healthcheck:
-      test:
-        [
-          'CMD',
-          'wget',
-          '--quiet',
-          '--tries=1',
-          '--spider',
-          'http://localhost:3000/api/health',
-        ]
+      test: [ 'CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000/api/health' ]
       interval: 10s
       timeout: 5s
       retries: 3

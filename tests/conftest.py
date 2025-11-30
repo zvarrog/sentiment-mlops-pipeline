@@ -1,5 +1,7 @@
 """Shared fixtures для тестов."""
 
+import importlib
+import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,13 +15,18 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
-    """Настраивает переменные окружения для тестов."""
-    os.environ["AIRFLOW_HOME"] = "/tmp/airflow_test"
-    os.environ["RAW_DATA_DIR"] = "/tmp/data/raw"
-    os.environ["PROCESSED_DATA_DIR"] = "/tmp/data/processed"
-    os.environ["MODEL_DIR"] = "/tmp/models"
-    os.environ["MLFLOW_TRACKING_URI"] = "http://localhost:5000"
-    os.environ["POSTGRES_METRICS_URI"] = "postgresql://test:test@localhost:5432/test"
+    """Настраивает переменные окружения для тестов.
+
+    Не перезаписывает MLFLOW_TRACKING_URI и другие переменные если они уже установлены
+    (для запуска в Docker контейнерах).
+    """
+    os.environ.setdefault("AIRFLOW_HOME", "/tmp/airflow_test")
+    os.environ.setdefault("RAW_DATA_DIR", "/tmp/data/raw")
+    os.environ.setdefault("PROCESSED_DATA_DIR", "/tmp/data/processed")
+    os.environ.setdefault("MODEL_DIR", "/tmp/models")
+    # В Docker используется http://mlflow:5000, локально - http://localhost:5000
+    os.environ.setdefault("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    os.environ.setdefault("POSTGRES_METRICS_URI", "postgresql://test:test@localhost:5432/test")
 
 
 @pytest.fixture
@@ -69,14 +76,14 @@ def sample_parquet_files_small(tmp_path_factory) -> Iterator[Path]:
     data = {
         "reviewText": np.random.choice(
             [
-                "хорошо",
-                "плохо",
-                "отлично",
-                "не понравилось",
-                "супер",
-                "ужасно",
-                "нормально",
-                "великолепно",
+                "This product is excellent and works perfectly",
+                "Terrible quality, very disappointed with purchase",
+                "Amazing device, highly recommend to everyone",
+                "Waste of money, stopped working after week",
+                "Great value for the price, satisfied customer",
+                "Poor design and cheap materials used throughout",
+                "Outstanding performance, exceeded my expectations completely",
+                "Mediocre at best, nothing special about it",
             ],
             size=n_total,
         ),
@@ -93,9 +100,7 @@ def sample_parquet_files_small(tmp_path_factory) -> Iterator[Path]:
     # Сохраняем train/val/test splits
     df.to_parquet(processed_dir / "train.parquet", index=False)
     df.iloc[:per_class].to_parquet(processed_dir / "val.parquet", index=False)
-    df.iloc[per_class : per_class * 2].to_parquet(
-        processed_dir / "test.parquet", index=False
-    )
+    df.iloc[per_class : per_class * 2].to_parquet(processed_dir / "test.parquet", index=False)
 
     old_processed_dir = os.environ.get("PROCESSED_DATA_DIR")
     os.environ["PROCESSED_DATA_DIR"] = str(processed_dir)
@@ -131,20 +136,17 @@ def mock_mlflow(monkeypatch):
     monkeypatch.setattr(mlflow, "set_experiment", lambda *a, **k: None)
 
     # Мокаем sklearn.log_model и pyfunc.log_model
+    # Игнорируем ошибки импорта — модули могут отсутствовать в тестовом окружении
     try:
-        import importlib
-
         mlflow_sklearn = importlib.import_module("mlflow.sklearn")
         monkeypatch.setattr(mlflow_sklearn, "log_model", lambda *a, **k: None)
     except (ImportError, AttributeError):
-        pass
+        logging.debug("mlflow.sklearn не установлен — мок пропущен")
 
     try:
-        import importlib
-
         mlflow_pyfunc = importlib.import_module("mlflow.pyfunc")
         monkeypatch.setattr(mlflow_pyfunc, "log_model", lambda *a, **k: None)
     except (ImportError, AttributeError):
-        pass
+        logging.debug("mlflow.pyfunc не установлен — мок пропущен")
 
     yield

@@ -6,10 +6,11 @@ from typing import Any
 
 import pandas as pd
 
+from scripts.config import NUMERIC_COLS
+
 
 def get_baseline_stats(x_train: pd.DataFrame) -> dict[str, dict[str, float]]:
-    from scripts.config import NUMERIC_COLS
-
+    """Вычисляет базовые статистики (mean, std) для числовых колонок."""
     baseline_stats: dict[str, dict[str, float]] = {}
     for col in NUMERIC_COLS:
         if col not in x_train.columns:
@@ -23,58 +24,61 @@ def get_baseline_stats(x_train: pd.DataFrame) -> dict[str, dict[str, float]]:
 
 
 def to_bool(x: Any, default: bool = False) -> bool:
+    """Преобразует значение в булево."""
     if x is None:
         return bool(default)
     if isinstance(x, bool):
         return x
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in {"1", "true", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "no", "n", "off", ""}:
+            return False
+        return bool(default)
     if isinstance(x, (int, float)):
         return bool(x)
-    if isinstance(x, str):
-        return x.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(x)
+    return bool(default)
 
 
-def get_value(context: dict, name: str, default: str | None = None) -> str:
+def get_value(context: dict[str, Any], name: str, default: str | None = None) -> str:
+    """Извлекает строковое значение из контекста Airflow (params, dag_run.conf, dag.params)."""
     params = context.get("params") or {}
     if name in params:
         return str(params.get(name))
     dag_run = context.get("dag_run")
-    if getattr(dag_run, "conf", None) and name in dag_run.conf:
-        return str(dag_run.conf.get(name))
+    conf = getattr(dag_run, "conf", None)
+    if conf is not None and name in conf:
+        return str(conf.get(name))
     dag = context.get("dag")
     if dag and name in getattr(dag, "params", {}):
         return str(dag.params.get(name))
     return str(default or "")
 
 
-def get_flag(context: dict, name: str, default: bool = False) -> bool:
-    params = context.get("params") or {}
-    if name in params:
-        return to_bool(params.get(name), default)
-    dag_run = context.get("dag_run")
-    if getattr(dag_run, "conf", None) and name in dag_run.conf:
-        return to_bool(dag_run.conf.get(name), default)
-    dag = context.get("dag")
-    if dag and name in getattr(dag, "params", {}):
-        return to_bool(dag.params.get(name), default)
-    return bool(default)
+def get_flag(context: dict[str, Any], name: str, default: bool = False) -> bool:
+    """Извлекает булево значение из контекста Airflow.
+
+    Использует get_value как единый источник извлечения строки,
+    затем приводит к булеву через to_bool.
+    """
+    raw = get_value(context, name, str(default).lower())
+    return to_bool(raw, default)
 
 
-def atomic_write_json(path, data: dict, **kwargs):
-    """Атомарная запись JSON-файла через временный файл."""
-    import json
-    import os
-    from pathlib import Path
+def get_model_input(pipeline, x_data: pd.DataFrame) -> pd.DataFrame | pd.Series:
+    """Определяет правильный input для модели.
 
-    path = Path(path)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
+    Пайплайны с препроцессором ('pre') принимают полный DataFrame,
+    остальные (text-only) — только колонку reviewText.
 
-    try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=kwargs.get("indent", 2))
-        # Атомарное переименование (на POSIX это атомарно)
-        os.replace(temp_path, path)
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+    Args:
+        pipeline: Обученный sklearn Pipeline.
+        x_data: DataFrame с данными.
+
+    Returns:
+        DataFrame или Series в зависимости от типа пайплайна.
+    """
+    if "pre" in getattr(pipeline, "named_steps", {}):
+        return x_data
+    return x_data["reviewText"]

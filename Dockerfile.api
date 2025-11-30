@@ -1,5 +1,5 @@
 # Dockerfile.api — корневой Dockerfile для сервиса API
-FROM python:3.11-slim AS base
+FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -10,7 +10,7 @@ WORKDIR /app
 FROM base AS deps
 COPY requirements.api.txt /app/requirements.api.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r /app/requirements.api.txt
+    pip install --default-timeout=300 -r /app/requirements.api.txt
 
 RUN python -m textblob.download_corpora
 
@@ -20,10 +20,12 @@ FROM base AS runtime
 RUN groupadd -g 10001 appgroup && useradd -m -u 10001 -g 10001 appuser
 
 WORKDIR /app
-COPY --from=deps /usr/local/lib/python3.11 /usr/local/lib/python3.11
+COPY --from=deps /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=deps /usr/local/bin /usr/local/bin
 
 COPY --chown=appuser:appgroup scripts/ ./scripts/
+
+ENV PYTHONPATH=/app
 
 RUN mkdir -p /app/artefacts /app/artefacts/model_artefacts /app/artefacts/drift_artefacts /app/model \
     && chown -R appuser:appgroup /app/artefacts /app/model
@@ -35,4 +37,4 @@ RUN mkdir -p /tmp/transformers_cache && chmod -R 700 /tmp/transformers_cache
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD python -c "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3); sys.exit(0 if getattr(r,'status',200)==200 else 1)" || exit 1
 
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "1", "-b", "0.0.0.0:8000", "--timeout", "120", "scripts.api_service:app"]
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "1", "-b", "0.0.0.0:8000", "--timeout", "120", "scripts.api.app:app"]

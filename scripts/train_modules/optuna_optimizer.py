@@ -1,6 +1,5 @@
 """Оптимизация гиперпараметров с помощью Optuna."""
 
-import signal
 from collections.abc import Callable
 
 import mlflow
@@ -21,18 +20,11 @@ from scripts.config import (
 )
 from scripts.logging_config import get_logger
 from scripts.models.kinds import ModelKind
+from scripts.shutdown import is_shutdown_requested, register_shutdown_handlers
 from scripts.train_modules.evaluation import compute_metrics
 from scripts.train_modules.pipeline_builders import ModelBuilderFactory
 
-log = get_logger("optuna_optimizer")
-
-_interrupted = False
-
-
-def _signal_handler(signum, frame):
-    global _interrupted
-    log.warning("Получен сигнал %s, прерываем оптимизацию", signum)
-    _interrupted = True
+log = get_logger(__name__)
 
 
 def create_objective(
@@ -54,20 +46,21 @@ def create_objective(
     Returns:
         Objective функция для Optuna
     """
+    # Вычисляем список доступных числовых колонок один раз при создании objective
+    available_numeric_cols = [c for c in NUMERIC_COLS if c in x_train.columns]
 
     def objective(trial: optuna.Trial) -> float:
-        trial.set_user_attr(
-            "numeric_cols", [c for c in NUMERIC_COLS if c in x_train.columns]
-        )
         trial.set_user_attr("n_train_samples", len(x_train))
         mlflow.log_param("model", model_kind.value)
 
         is_distilbert = model_kind is ModelKind.distilbert
 
         if N_FOLDS > 1:
-            return _evaluate_with_cv(trial, model_kind, x_train, y_train, is_distilbert)
+            return _evaluate_with_cv(
+                trial, model_kind, x_train, y_train, is_distilbert, available_numeric_cols
+            )
         return _evaluate_holdout(
-            trial, model_kind, x_train, y_train, x_val, y_val, is_distilbert
+            trial, model_kind, x_train, y_train, x_val, y_val, is_distilbert, available_numeric_cols
         )
 
     return objective
@@ -79,12 +72,13 @@ def _evaluate_with_cv(
     x_train: pd.DataFrame,
     y_train: np.ndarray,
     is_distilbert: bool,
+    numeric_cols: list[str],
 ) -> float:
     """Оценка модели с кросс-валидацией."""
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     f1_scores: list[float] = []
 
-    builder = ModelBuilderFactory.get_builder(model_kind, trial)
+    builder = ModelBuilderFactory.get_builder(model_kind, trial, numeric_cols=numeric_cols)
 
     if is_distilbert:
         texts = x_train["reviewText"].values
@@ -117,9 +111,10 @@ def _evaluate_holdout(
     x_val: pd.DataFrame,
     y_val: np.ndarray,
     is_distilbert: bool,
+    numeric_cols: list[str],
 ) -> float:
     """Оценка модели на отложенной выборке."""
-    builder = ModelBuilderFactory.get_builder(model_kind, trial)
+    builder = ModelBuilderFactory.get_builder(model_kind, trial, numeric_cols=numeric_cols)
     pipe = builder.build()
 
     if is_distilbert:
@@ -157,11 +152,7 @@ def optimize_model(
     Returns:
         Оптимизированная Optuna study
     """
-    global _interrupted
-    _interrupted = False
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
+    register_shutdown_handlers(exit_on_signal=False)
 
     full_study_name = f"{study_name}_{model_kind.value}"
     log.info("Создание/загрузка Optuna study: %s", full_study_name)
@@ -189,17 +180,17 @@ def optimize_model(
         timeout,
     )
 
+    def stop_on_interrupt(study: optuna.Study, trial: optuna.Trial) -> None:
+        """Callback для остановки оптимизации при получении сигнала."""
+        if is_shutdown_requested():
+            study.stop()
+
     try:
         study.optimize(
             objective_fn,
             n_trials=OPTUNA_N_TRIALS,
             timeout=timeout,
-            callbacks=[
-                lambda study, trial: (
-                    study.stop() if _interrupted else None,
-                    None,
-                )[1]
-            ],
+            callbacks=[stop_on_interrupt],
             show_progress_bar=False,
         )
     except KeyboardInterrupt:

@@ -9,9 +9,10 @@
 
 from pathlib import Path
 
+import pandas as pd
 from pyspark import StorageLevel
 from pyspark.ml.feature import IDF, CountVectorizer, Tokenizer
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
     abs,
     avg,
@@ -19,10 +20,12 @@ from pyspark.sql.functions import (
     count,
     greatest,
     lit,
+    pandas_udf,
     rand,
     row_number,
     when,
 )
+from pyspark.sql.types import FloatType
 from pyspark.sql.window import Window
 
 from scripts.config import (
@@ -31,50 +34,33 @@ from scripts.config import (
     HASHING_TF_FEATURES,
     MIN_DF,
     MIN_TF,
+    PARQUET_TRAIN_PARTITIONS,
+    PARQUET_VAL_TEST_PARTITIONS,
     PER_CLASS_LIMIT,
     PROCESSED_DATA_DIR,
     RAW_DATA_DIR,
+    RUN_DATA_VALIDATION,
     SHUFFLE_PARTITIONS,
     SPARK_DRIVER_MEMORY,
     SPARK_EXECUTOR_MEMORY,
     SPARK_NUM_CORES,
 )
+from scripts.feature_engineering import (
+    calculate_sentiment,
+    get_spark_clean_udf,
+    get_spark_feature_extraction_udf,
+)
+from scripts.logging_config import get_logger
 
-from .logging_config import setup_auto_logging
-from .feature_engineering import calculate_sentiment
-
-log = setup_auto_logging()
+log = get_logger(__name__)
 
 
-def process_data(force: bool = False) -> None:
-    """Основная функция обработки данных Spark.
+@pandas_udf(FloatType())
+def sentiment_udf(texts: pd.Series) -> pd.Series:
+    return texts.fillna("").apply(calculate_sentiment)
 
-    Args:
-        force: Если True, обрабатывает заново даже если файлы существуют
 
-    Выполняет:
-    - Загрузку CSV
-    - Очистку и нормализацию текста
-    - Балансировку по классам
-    - Добавление признаков
-    - Sentiment анализ
-    - TF-IDF векторизацию
-    - Сохранение в parquet
-
-    Вызывается только на driver, никогда на worker-ах.
-    """
-    if (
-        not force
-        and DATA_PATHS.train.exists()
-        and DATA_PATHS.val.exists()
-        and DATA_PATHS.test.exists()
-    ):
-        log.warning(
-            "Обработанные данные уже существуют в %s. Для форсированной обработки используйте force=True.",
-            str(PROCESSED_DATA_DIR),
-        )
-        return
-
+def create_spark_session() -> SparkSession:
     spark = (
         SparkSession.builder.appName("KindleReviews")
         .config("spark.driver.memory", SPARK_DRIVER_MEMORY)
@@ -96,8 +82,11 @@ def process_data(force: bool = False) -> None:
         spark.sparkContext.getConf().get("spark.executor.cores", "n/a"),
         spark.conf.get("spark.sql.shuffle.partitions"),
     )
+    return spark
 
-    df = spark.read.csv(
+
+def load_data(spark: SparkSession) -> DataFrame:
+    return spark.read.csv(
         str(RAW_DATA_DIR / CSV_NAME),
         header=True,
         inferSchema=True,
@@ -106,62 +95,46 @@ def process_data(force: bool = False) -> None:
         multiLine=True,
     )
 
-    from scripts.feature_engineering import (
-        get_spark_clean_udf,
-        get_spark_feature_extraction_udf,
-    )
 
+def clean_and_balance_data(df: DataFrame) -> DataFrame:
     clean_udf = get_spark_clean_udf()
     feature_udf = get_spark_feature_extraction_udf()
 
-    # Нормализуем текст
+    df = df.withColumn("features", feature_udf(col("reviewText")))
     df = df.withColumn("reviewText", clean_udf(col("reviewText")))
 
-    # Извлекаем признаки в MapType и разворачиваем в колонки
-    df = df.withColumn("features", feature_udf(col("reviewText")))
-    for feature_name in [
+    feature_names = [
         "text_len",
         "word_count",
         "kindle_freq",
         "exclamation_count",
         "caps_ratio",
         "question_count",
-    ]:
+    ]
+    for feature_name in feature_names:
         df = df.withColumn(feature_name, col("features").getItem(feature_name))
     df = df.drop("features")
 
     # Чистим данные: валидные тексты и оценки, исключаем пустые/пробельные тексты
     clean = df.filter(
-        (col("reviewText").isNotNull())
-        & (col("overall").isNotNull())
-        & (col("text_len") > 0)
+        (col("reviewText").isNotNull()) & (col("overall").isNotNull()) & (col("text_len") > 0)
     )
-    log.info("После фильтрации null и пустых текстов: %s", clean.count())
+    log.info("Фильтрация null и пустых текстов применена")
 
-    # Балансировка через Window-функцию (эффективнее цикла по классам)
+    # Балансировка через Window-функцию
     window_spec = Window.partitionBy("overall").orderBy(rand(seed=42))
     clean = (
         clean.withColumn("rn", row_number().over(window_spec))
         .filter(col("rn") <= PER_CLASS_LIMIT)
         .drop("rn")
     )
-    log.info(
-        "После балансировки (<= %d на класс) строк: %d", PER_CLASS_LIMIT, clean.count()
-    )
+    log.info("Балансировка применена: <= %d на класс", PER_CLASS_LIMIT)
+    return clean
 
-    # sentiment через Pandas UDF
-    import pandas as pd
-    from pyspark.sql.functions import pandas_udf
-    from pyspark.sql.types import FloatType
 
-    @pandas_udf(FloatType())
-    def sentiment_udf(texts: pd.Series) -> pd.Series:
-        return texts.fillna("").apply(calculate_sentiment)
-
-    clean = (
-        clean.withColumn(
-            "avg_word_length", col("text_len") / greatest(col("word_count"), lit(1))
-        )
+def add_sentiment_features(df: DataFrame) -> DataFrame:
+    return (
+        df.withColumn("avg_word_length", col("text_len") / greatest(col("word_count"), lit(1)))
         .withColumn("sentiment", sentiment_udf(col("reviewText")))
         .withColumn(
             "sentiment_category",
@@ -177,24 +150,10 @@ def process_data(force: bool = False) -> None:
         )
     )
 
-    clean = clean.persist(StorageLevel.MEMORY_AND_DISK)
 
-    # Материализуем кэш через action
-    features_count = clean.count()
-    log.info("После всех фич строк: %d", features_count)
-
-    # Делим на выборки
-    train, val, test = clean.randomSplit([0.7, 0.15, 0.15], seed=42)
-    tr_c, v_c, te_c = train.count(), val.count(), test.count()
-    log.info(
-        "Размеры выборок: train=%d, val=%d, test=%d (total=%d)",
-        tr_c,
-        v_c,
-        te_c,
-        tr_c + v_c + te_c,
-    )
-
-    # TF-IDF: применяем векторизатор и IDF только на train и применяем к val/test тем же моделям
+def apply_tfidf(
+    train: DataFrame, val: DataFrame, test: DataFrame
+) -> tuple[DataFrame, DataFrame, DataFrame]:
     tokenizer = Tokenizer(inputCol="reviewText", outputCol="words")
     vectorizer = CountVectorizer(
         inputCol="words",
@@ -205,104 +164,159 @@ def process_data(force: bool = False) -> None:
     )
     idf = IDF(inputCol="rawFeatures", outputCol="tfidfFeatures")
 
+    # Fit on train
     train_words = tokenizer.transform(train)
     vec_model = vectorizer.fit(train_words)
     train_feat = vec_model.transform(train_words)
     idf_model = idf.fit(train_feat)
-    train = idf_model.transform(train_feat)
+    train_res = idf_model.transform(train_feat)
 
+    # Transform val
     val_words = tokenizer.transform(val)
     val_feat = vec_model.transform(val_words)
-    val = idf_model.transform(val_feat)
+    val_res = idf_model.transform(val_feat)
 
+    # Transform test
     test_words = tokenizer.transform(test)
     test_feat = vec_model.transform(test_words)
-    test = idf_model.transform(test_feat)
+    test_res = idf_model.transform(test_feat)
 
-    train = train.persist(StorageLevel.MEMORY_AND_DISK)
-    val = val.persist(StorageLevel.MEMORY_AND_DISK)
-    test = test.persist(StorageLevel.MEMORY_AND_DISK)
     log.info(
         "CountVectorizer: vocabSize<=%d, minDF=%s, minTF=%s",
         HASHING_TF_FEATURES,
         str(MIN_DF),
         str(MIN_TF),
     )
+    return train_res, val_res, test_res
 
-    try:
-        # Агрегации на train — для избежания data leakage
-        # Статистики для val и test будут заполнены только для известных ID
-        user_stats = (
-            train.groupBy("reviewerID")
-            .agg(
-                avg("text_len").alias("user_avg_len"),
-                count("reviewText").alias("user_review_count"),
-            )
-            .persist(StorageLevel.MEMORY_AND_DISK)
-        )
 
-        item_stats = (
-            train.groupBy("asin")
-            .agg(
-                avg("text_len").alias("item_avg_len"),
-                count("reviewText").alias("item_review_count"),
-            )
-            .persist(StorageLevel.MEMORY_AND_DISK)
+def add_aggregations(
+    train: DataFrame, val: DataFrame, test: DataFrame
+) -> tuple[DataFrame, DataFrame, DataFrame]:
+    # Агрегации на train — для избежания data leakage
+    user_stats = (
+        train.groupBy("reviewerID")
+        .agg(
+            avg("text_len").alias("user_avg_len"),
+            count("reviewText").alias("user_review_count"),
         )
-
-        train = train.join(user_stats, on="reviewerID", how="left").join(
-            item_stats, on="asin", how="left"
-        )
-        val = val.join(user_stats, on="reviewerID", how="left").join(
-            item_stats, on="asin", how="left"
-        )
-        test = test.join(user_stats, on="reviewerID", how="left").join(
-            item_stats, on="asin", how="left"
-        )
-
-        log.info(
-            "После добавления агрегатов кол-во колонок в train: %d", len(train.columns)
-        )
-
-        train.repartition(4).write.mode("overwrite").parquet(str(DATA_PATHS.train))
-        val.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.val))
-        test.repartition(2).write.mode("overwrite").parquet(str(DATA_PATHS.test))
-    finally:
-        if 'clean' in locals() and hasattr(clean, 'unpersist'):
-            clean.unpersist()
-        train.unpersist()
-        val.unpersist()
-        test.unpersist()
-        # Очищаем кэши агрегатов (если переменные определены)
-        if "user_stats" in locals() and hasattr(user_stats, "unpersist"):
-            user_stats.unpersist()
-        if "item_stats" in locals() and hasattr(item_stats, "unpersist"):
-            item_stats.unpersist()
-
-    log.info(
-        "Данные сохранены в %s",
-        str(PROCESSED_DATA_DIR.resolve()),
+        .persist(StorageLevel.MEMORY_AND_DISK)
     )
 
-    from scripts.config import RUN_DATA_VALIDATION
+    item_stats = (
+        train.groupBy("asin")
+        .agg(
+            avg("text_len").alias("item_avg_len"),
+            count("reviewText").alias("item_review_count"),
+        )
+        .persist(StorageLevel.MEMORY_AND_DISK)
+    )
 
-    if RUN_DATA_VALIDATION:
-        try:
-            from .data_validation import (
-                log_validation_results,
-                validate_parquet_dataset,
-            )
+    train_res = train.join(user_stats, on="reviewerID", how="left").join(
+        item_stats, on="asin", how="left"
+    )
+    val_res = val.join(user_stats, on="reviewerID", how="left").join(
+        item_stats, on="asin", how="left"
+    )
+    test_res = test.join(user_stats, on="reviewerID", how="left").join(
+        item_stats, on="asin", how="left"
+    )
 
-            validation_results = validate_parquet_dataset(Path(PROCESSED_DATA_DIR))
-            all_valid = log_validation_results(validation_results)
+    log.info("После добавления агрегатов кол-во колонок в train: %d", len(train_res.columns))
 
-            if not all_valid:
-                log.warning("Обнаружены проблемы в сохранённых данных")
+    # Принудительная материализация статистик перед возвратом для гарантии вычисления.
+    # При ленивых вычислениях это не строго обязательно до записи,
+    # но persist помогает при многократном использовании (как здесь).
+    return train_res, val_res, test_res
 
-        except (OSError, ValueError, ImportError) as e:
-            log.warning("Ошибка валидации сохранённых данных: %s", e)
 
-    spark.stop()
+def validate_data() -> None:
+    """Валидирует сохраненные parquet файлы."""
+    if not RUN_DATA_VALIDATION:
+        return
+
+    try:
+        from scripts.data_validation import (
+            log_validation_results,
+            validate_parquet_dataset,
+        )
+
+        validation_results = validate_parquet_dataset(Path(PROCESSED_DATA_DIR))
+        all_valid = log_validation_results(validation_results)
+
+        if not all_valid:
+            log.warning("Обнаружены проблемы в сохранённых данных")
+    except (OSError, ValueError) as e:
+        log.warning("Ошибка валидации сохранённых данных: %s", e)
+
+
+def process_data(force: bool = False) -> None:
+    """Основная функция обработки данных Spark."""
+    if (
+        not force
+        and DATA_PATHS.train.exists()
+        and DATA_PATHS.val.exists()
+        and DATA_PATHS.test.exists()
+    ):
+        log.warning(
+            "Обработанные данные уже существуют в %s. Используйте force=True.",
+            str(PROCESSED_DATA_DIR),
+        )
+        return
+
+    spark = create_spark_session()
+    clean = None
+    train = val = test = None
+
+    try:
+        df = load_data(spark)
+        clean = clean_and_balance_data(df)
+        clean = add_sentiment_features(clean)
+
+        clean = clean.persist(StorageLevel.MEMORY_AND_DISK)
+        log.info("Данные с фичами закешированы")
+
+        # Split
+        train, val, test = clean.randomSplit([0.7, 0.15, 0.15], seed=42)
+
+        # TF-IDF
+        train, val, test = apply_tfidf(train, val, test)
+
+        # Persist intermediate results
+        train = train.persist(StorageLevel.MEMORY_AND_DISK)
+        val = val.persist(StorageLevel.MEMORY_AND_DISK)
+        test = test.persist(StorageLevel.MEMORY_AND_DISK)
+
+        # Aggregations
+        train, val, test = add_aggregations(train, val, test)
+
+        # Save
+        train.repartition(PARQUET_TRAIN_PARTITIONS).write.mode("overwrite").parquet(
+            str(DATA_PATHS.train)
+        )
+        val.repartition(PARQUET_VAL_TEST_PARTITIONS).write.mode("overwrite").parquet(
+            str(DATA_PATHS.val)
+        )
+        test.repartition(PARQUET_VAL_TEST_PARTITIONS).write.mode("overwrite").parquet(
+            str(DATA_PATHS.test)
+        )
+
+        log.info("Данные сохранены в %s", str(PROCESSED_DATA_DIR.resolve()))
+
+    finally:
+        # Освобождаем память: unpersist всех закешированных DataFrame
+        if clean is not None:
+            clean.unpersist()
+        if train is not None:
+            train.unpersist()
+        if val is not None:
+            val.unpersist()
+        if test is not None:
+            test.unpersist()
+
+        spark.stop()
+
+    validate_data()
 
 
 if __name__ == "__main__":

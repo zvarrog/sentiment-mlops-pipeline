@@ -1,4 +1,4 @@
-"""Централизованная конфигурация логирования."""
+"""Централизованная конфигурация логирования и matplotlib backend."""
 
 import contextvars
 import json
@@ -7,9 +7,11 @@ import logging.config
 from contextlib import contextmanager
 from pathlib import Path
 
-_trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "trace_id", default=None
-)
+import matplotlib
+
+matplotlib.use("Agg")
+
+_trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("trace_id", default=None)
 
 
 class TraceIdFilter(logging.Filter):
@@ -59,11 +61,43 @@ def get_logging_config(
     level: str = "INFO",
     log_file: str | None = None,
     log_format: str = "text",
-) -> dict:
+) -> dict[str, object]:
     base_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     formatter_name = "default" if log_format != "json" else "json"
 
-    config = {
+    handlers: dict[str, dict[str, object]] = {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": level,
+            "formatter": formatter_name,
+            "stream": "ext://sys.stdout",
+            "filters": ["trace"],
+        }
+    }
+
+    root_handlers: list[str] = ["console"]
+    kindle_handlers: list[str] = ["console"]
+    scripts_handlers: list[str] = ["console"]
+
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        handlers["file"] = {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": level,
+            "formatter": formatter_name if log_format == "json" else "detailed",
+            "filename": str(log_path),
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 5,
+            "encoding": "utf-8",
+            "filters": ["trace"],
+        }
+        root_handlers.append("file")
+        kindle_handlers.append("file")
+        scripts_handlers.append("file")
+
+    config: dict[str, object] = {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
@@ -80,19 +114,11 @@ def get_logging_config(
         "filters": {
             "trace": {"()": "scripts.logging_config.TraceIdFilter"},
         },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "level": level,
-                "formatter": formatter_name,
-                "stream": "ext://sys.stdout",
-                "filters": ["trace"],
-            }
-        },
-        "root": {"level": level, "handlers": ["console"]},
+        "handlers": handlers,
+        "root": {"level": level, "handlers": root_handlers},
         "loggers": {
-            "kindle": {"level": level, "handlers": ["console"], "propagate": False},
-            "scripts": {"level": level, "handlers": ["console"], "propagate": False},
+            "kindle": {"level": level, "handlers": kindle_handlers, "propagate": False},
+            "scripts": {"level": level, "handlers": scripts_handlers, "propagate": False},
             "urllib3": {"level": "WARNING"},
             "pyspark": {"level": "WARNING"},
             "py4j": {"level": "WARNING"},
@@ -101,25 +127,6 @@ def get_logging_config(
             "git": {"level": "ERROR"},
         },
     }
-
-    if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        config["handlers"]["file"] = {
-            "class": "logging.handlers.RotatingFileHandler",
-            "level": level,
-            "formatter": formatter_name if log_format == "json" else "detailed",
-            "filename": str(log_path),
-            "maxBytes": 10 * 1024 * 1024,
-            "backupCount": 5,
-            "encoding": "utf-8",
-            "filters": ["trace"],
-        }
-
-        config["root"]["handlers"].append("file")
-        config["loggers"]["kindle"]["handlers"].append("file")
-        config["loggers"]["scripts"]["handlers"].append("file")
 
     return config
 
@@ -142,22 +149,8 @@ def setup_logging(
 
 
 def get_logger(name: str = "kindle") -> logging.Logger:
+    """Получает logger с автоматической инициализацией."""
     root_logger = logging.getLogger()
     if not root_logger.handlers:
         setup_logging()
     return logging.getLogger(name)
-
-
-def setup_auto_logging(
-    level: str = "INFO",
-    log_file: str | None = None,
-    log_format: str = "text",
-) -> logging.Logger:
-    return setup_logging(level=level, log_file=log_file, log_format=log_format)
-
-
-def setup_training_logging(
-    level: str = "INFO",
-    log_file: str | None = None,
-) -> logging.Logger:
-    return setup_logging(level=level, log_file=log_file)

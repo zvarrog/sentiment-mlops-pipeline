@@ -3,33 +3,44 @@ import torch
 from sklearn.base import BaseEstimator, ClassifierMixin
 from transformers import AutoModel, AutoTokenizer
 
+from scripts.config import DISTILBERT_EARLY_STOP_PATIENCE
+from scripts.logging_config import get_logger
+
+log = get_logger(__name__)
+
 
 class DistilBertClassifier(BaseEstimator, ClassifierMixin):
+    """sklearn-совместимый классификатор на базе DistilBERT.
+
+    Реализует интерфейс sklearn estimator для использования в Pipeline.
+    Обучает только classification head, замораживая веса base model.
+    """
+
     def __init__(
         self,
-        epochs=1,
-        lr=1e-4,
-        max_len=128,
-        batch_size=8,
-        seed=42,
-        use_bigrams: bool = False,
-        device=None,
+        epochs: int = 1,
+        lr: float = 1e-4,
+        max_len: int = 128,
+        batch_size: int = 8,
+        seed: int = 42,
+        device: str | None = None,
     ):
         self.epochs = epochs
         self.lr = lr
         self.max_len = max_len
         self.batch_size = batch_size
         self.seed = seed
-        self.use_bigrams = use_bigrams
         self.device = device
         self._fitted = False
         self._tokenizer = None
         self._base_model = None
         self._head = None
         self._device_actual = None
-        self._classes_ = None
+        self.classes_ = None  # sklearn convention: публичный атрибут
 
     def _tokenize(self, texts, return_tensors: str = "pt"):
+        if self._tokenizer is None:
+            raise RuntimeError("Токенизатор не инициализирован")
         return self._tokenizer(
             list(texts),
             truncation=True,
@@ -42,13 +53,13 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         if self._head is not None:
             try:
                 return next(self._head.parameters()).device
-            except (StopIteration, RuntimeError):
-                pass
+            except (StopIteration, RuntimeError) as e:
+                log.debug("Не удалось получить device из head: %s", e)
         if self._base_model is not None:
             try:
                 return next(self._base_model.parameters()).device
-            except (StopIteration, RuntimeError):
-                pass
+            except (StopIteration, RuntimeError) as e:
+                log.debug("Не удалось получить device из base_model: %s", e)
         return self._device_actual or torch.device("cpu")
 
     def fit(self, x, y, x_val=None, y_val=None):
@@ -61,14 +72,11 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         # Автовыбор устройства
         device_str = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        import logging
-
-        log = logging.getLogger(__name__)
-        log.info(f"DistilBERT training on device: {device_str}")
+        log.info("Обучение DistilBERT на устройстве: %s", device_str)
 
         # Валидация устройства
         if device_str not in ["cpu", "cuda"] and not device_str.startswith("cuda:"):
-            log.warning(f"Invalid device '{device_str}', falling back to 'cpu'")
+            log.warning("Недопустимое устройство '%s', возвращаемся к 'cpu'", device_str)
             device_str = "cpu"
 
         device = torch.device(device_str)
@@ -77,7 +85,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
             p.requires_grad = False
 
         unique_labels = np.unique(y)
-        self._classes_ = unique_labels
+        self.classes_ = unique_labels
         label2idx = {lab: i for i, lab in enumerate(unique_labels)}
         hidden = self._base_model.config.hidden_size
         n_classes = len(unique_labels)
@@ -103,7 +111,6 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
 
         best_val_loss = float("inf")
         patience_counter = 0
-        patience = 3
 
         for epoch in range(self.epochs):
             self._head.train()
@@ -117,10 +124,9 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 with torch.no_grad():
                     out = self._base_model(**enc)
                     cls = out.last_hidden_state[:, 0]
+                # накопление градиентов
                 logits = self._head(cls)
-                loss = loss_fn(
-                    logits, torch.tensor(by, dtype=torch.long, device=device)
-                )
+                loss = loss_fn(logits, torch.tensor(by, dtype=torch.long, device=device))
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -142,31 +148,37 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                         out = self._base_model(**enc)
                         cls = out.last_hidden_state[:, 0]
                         logits = self._head(cls)
-                        loss = loss_fn(
-                            logits, torch.tensor(by, dtype=torch.long, device=device)
-                        )
+                        loss = loss_fn(logits, torch.tensor(by, dtype=torch.long, device=device))
                         val_loss += loss.item()
                         val_batches += 1
 
                 avg_val_loss = val_loss / val_batches if val_batches > 0 else 0.0
                 log.info(
-                    f"Epoch {epoch + 1}/{self.epochs}: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}"
+                    "Epoch %d/%d: train_loss=%.4f, val_loss=%.4f",
+                    epoch + 1,
+                    self.epochs,
+                    avg_train_loss,
+                    avg_val_loss,
                 )
 
-                # Early stopping
+                # ранняя остановка
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     patience_counter = 0
                 else:
                     patience_counter += 1
-                    if patience_counter >= patience:
+                    if patience_counter >= DISTILBERT_EARLY_STOP_PATIENCE:
                         log.info(
-                            f"Early stopping: no improvement for {patience} epochs"
+                            "ранняя остановка: нет улучшения за %d эпох",
+                            DISTILBERT_EARLY_STOP_PATIENCE,
                         )
                         break
             else:
                 log.info(
-                    f"Epoch {epoch + 1}/{self.epochs}: train_loss={avg_train_loss:.4f}"
+                    "Epoch %d/%d: train_loss=%.4f",
+                    epoch + 1,
+                    self.epochs,
+                    avg_train_loss,
                 )
 
         self._device_actual = device
@@ -175,7 +187,12 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
         return self
 
     def predict(self, x):
-        if not self._fitted:
+        if (
+            not self._fitted
+            or self._base_model is None
+            or self._head is None
+            or self._tokenizer is None
+        ):
             raise RuntimeError("DistilBertClassifier не обучен")
         texts = x if isinstance(x, (list, np.ndarray)) else x.values
         preds = []
@@ -190,10 +207,15 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 logits = self._head(cls)
                 preds.extend(logits.argmax(dim=1).cpu().numpy())
         preds = np.array(preds)
-        return self._classes_[preds]
+        return self.classes_[preds]
 
     def predict_proba(self, x):
-        if not self._fitted:
+        if (
+            not self._fitted
+            or self._base_model is None
+            or self._head is None
+            or self._tokenizer is None
+        ):
             raise RuntimeError("DistilBertClassifier не обучен")
         import torch.nn.functional as func
 
@@ -211,7 +233,7 @@ class DistilBertClassifier(BaseEstimator, ClassifierMixin):
                 probs = func.softmax(logits, dim=1).cpu().numpy()
                 all_probs.append(probs)
         if not all_probs:
-            return np.zeros((0, len(self._classes_)), dtype=float)
+            return np.zeros((0, len(self.classes_)), dtype=float)
         return np.vstack(all_probs)
 
     def __getstate__(self):
